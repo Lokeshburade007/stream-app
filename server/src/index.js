@@ -73,6 +73,19 @@ async function startServer() {
   });
   await transcoder.initialize();
 
+  // node --watch and process managers stop the Node parent during a reload but
+  // may leave a spawned FFmpeg child alive. Kill active workers first so they
+  // cannot continue filling disk after the API process has gone away.
+  let mediaShutdownStarted = false;
+  const stopMediaWorkers = () => {
+    if (mediaShutdownStarted) return;
+    mediaShutdownStarted = true;
+    transcoder.cancelAllJobs();
+    setTimeout(() => process.exit(0), 250).unref();
+  };
+  process.once("SIGINT", stopMediaWorkers);
+  process.once("SIGTERM", stopMediaWorkers);
+
   // Connect Mongoose for custom stream models (WatchProgress)
   try {
     await mongoose.connect(MONGO_URL);
@@ -201,6 +214,11 @@ async function startServer() {
   const reserveLibraryImportSpace = async (req, res, next) => {
     const storage = await transcoder.getStorageStats();
     if (storage.activeJob) {
+      const existingImport = req.sourceUrl ? transcoder.getRemoteImport(req.sourceUrl) : null;
+      if (existingImport?.type === "active") {
+        req.existingImportJob = existingImport.job;
+        return next();
+      }
       return res.status(409).json({ error: "Wait for the current download or encoding job to finish before importing another video." });
     }
     const maxSourceBytes = transcoder.getSourceLimit(storage);
@@ -310,11 +328,18 @@ async function startServer() {
   });
 
   app.get("/api/library", requireHost, async (_req, res) => {
-    const storage = await transcoder.getStorageStats();
+    const [storage, orphaned, mediaStorage] = await Promise.all([
+      transcoder.getStorageStats(),
+      transcoder.getOrphanedMedia(),
+      transcoder.getCompletedMediaStorage()
+    ]);
     res.json({
       storage,
       maxUploadBytes: transcoder.getSourceLimit(storage),
-      media: transcoder.getCompletedMedia()
+      activeJob: transcoder.getActiveJob(),
+      media: transcoder.getCompletedMedia(),
+      orphaned,
+      mediaStorage
     });
   });
 
@@ -332,10 +357,39 @@ async function startServer() {
     });
   });
 
-  app.post("/api/media/import-url", requireHost, reserveLibraryImportSpace, (req, res) => {
+  const preventDuplicateUrlImport = (req, res, next) => {
     const sourceUrl = typeof req.body?.url === "string" ? req.body.url.trim() : "";
     if (!sourceUrl) return res.status(400).json({ error: "Provide a direct HTTPS video file URL." });
-    const job = transcoder.startRemoteImport(sourceUrl, req.maxSourceBytes);
+    req.sourceUrl = sourceUrl;
+    const existingImport = transcoder.getRemoteImport(sourceUrl);
+    if (existingImport?.type === "completed") {
+      return res.status(200).json({
+        message: "This direct video URL is already in your library.",
+        alreadyImported: true,
+        media: existingImport.media
+      });
+    }
+    if (existingImport?.type === "active") {
+      return res.status(200).json({
+        message: "This direct video URL is already being processed. Showing its server-side progress.",
+        alreadyStarted: true,
+        job: existingImport.job,
+        statusUrl: `/api/media/uploads/${existingImport.job.id}`
+      });
+    }
+    next();
+  };
+
+  app.post("/api/media/import-url", requireHost, preventDuplicateUrlImport, reserveLibraryImportSpace, (req, res) => {
+    if (req.existingImportJob) {
+      return res.status(200).json({
+        message: "This direct video URL is already being processed. Showing its server-side progress.",
+        alreadyStarted: true,
+        job: req.existingImportJob,
+        statusUrl: `/api/media/uploads/${req.existingImportJob.id}`
+      });
+    }
+    const job = transcoder.startRemoteImport(req.sourceUrl, req.maxSourceBytes);
     res.status(202).json({
       message: "Server-side video download started. It will be validated, encoded, and added to the library when complete.",
       job,
@@ -356,10 +410,37 @@ async function startServer() {
     }
   });
 
-  app.get("/api/media/uploads/:jobId", (req, res) => {
+  app.delete("/api/library/orphans/:orphanId", requireHost, async (req, res) => {
+    try {
+      await transcoder.deleteOrphanedMedia(req.params.orphanId);
+      const [storage, orphaned] = await Promise.all([
+        transcoder.getStorageStats(),
+        transcoder.getOrphanedMedia()
+      ]);
+      res.json({ message: "Unlisted server files were deleted", storage, orphaned });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/media/uploads/:jobId", requireHost, async (req, res) => {
     const job = transcoder.getJob(req.params.jobId);
     if (!job) return res.status(404).json({ error: "Upload job not found" });
-    res.json(job);
+    const storage = await transcoder.getStorageStats();
+    res.json({
+      ...job,
+      storage,
+      maxUploadBytes: transcoder.getSourceLimit(storage)
+    });
+  });
+
+  app.delete("/api/media/uploads/:jobId", requireHost, async (req, res) => {
+    const job = transcoder.cancelJob(req.params.jobId);
+    if (!job) return res.status(404).json({ error: "Upload job not found" });
+    res.status(202).json({
+      message: "The server job is being cancelled and its temporary files will be removed.",
+      job
+    });
   });
 
   // 1. Get the live catalogue. Upstream data is cached for ten minutes to keep

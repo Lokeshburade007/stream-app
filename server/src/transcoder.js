@@ -23,6 +23,8 @@ const QUALITY_LADDER = [
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mkv", ".mov", ".webm", ".m4v"]);
 const QUOTA_GUARD_BYTES = 32 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
+const JOB_ID_PATTERN = /^[a-f0-9-]{36}$/i;
+const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 if (ffmpegInstaller?.path) {
   ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -34,6 +36,10 @@ if (ffprobeInstaller?.path) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function isTerminalJob(job) {
+  return TERMINAL_JOB_STATUSES.has(job.status);
 }
 
 function asNumber(value) {
@@ -78,6 +84,12 @@ function titleFromFilename(filename) {
     .replace(/\b(2160p|1080p|720p|480p|x264|x265|hevc|bluray|web[- ]?dl|webrip|hdr|dv|proper|repack)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim() || "Untitled upload";
+}
+
+function sourceFingerprint(sourceUrl) {
+  return sourceUrl
+    ? crypto.createHash("sha256").update(sourceUrl.trim()).digest("hex")
+    : null;
 }
 
 function metadataText(value) {
@@ -271,6 +283,23 @@ export class MediaTranscoder {
     return job ? this.serializeJob(job) : null;
   }
 
+  getActiveJob() {
+    const activeJob = [...this.jobs.values()].find((job) => !isTerminalJob(job));
+    return activeJob ? this.serializeJob(activeJob) : null;
+  }
+
+  getRemoteImport(sourceUrl) {
+    const fingerprint = sourceFingerprint(sourceUrl);
+    if (!fingerprint) return null;
+    const activeJob = [...this.jobs.values()].find((job) =>
+      job.sourceFingerprint === fingerprint && !isTerminalJob(job)
+    );
+    if (activeJob) return { type: "active", job: this.serializeJob(activeJob) };
+
+    const completedMedia = [...this.completedMedia.values()].find((media) => media.sourceFingerprint === fingerprint);
+    return completedMedia ? { type: "completed", media: completedMedia } : null;
+  }
+
   getCompletedMedia() {
     return [...this.completedMedia.values()];
   }
@@ -280,14 +309,20 @@ export class MediaTranscoder {
   }
 
   hasActiveJob() {
-    return [...this.jobs.values()].some((job) => !["completed", "failed"].includes(job.status));
+    return [...this.jobs.values()].some((job) => !isTerminalJob(job));
   }
 
   async getStorageStats() {
-    const usedBytes = await directoryBytes(this.uploadRoot) + await directoryBytes(this.hlsRoot);
+    const [temporarySourceBytes, hlsBytes] = await Promise.all([
+      directoryBytes(this.uploadRoot),
+      directoryBytes(this.hlsRoot)
+    ]);
+    const usedBytes = temporarySourceBytes + hlsBytes;
     return {
       quotaBytes: this.quotaBytes,
       usedBytes,
+      temporarySourceBytes,
+      hlsBytes,
       availableBytes: Math.max(0, this.quotaBytes - usedBytes),
       mediaCount: this.completedMedia.size,
       activeJob: this.hasActiveJob()
@@ -310,11 +345,89 @@ export class MediaTranscoder {
     const media = this.completedMedia.get(mediaId);
     if (!media) return false;
     const jobId = String(mediaId).replace(/^local_/, "");
-    if (!/^[a-f0-9-]{36}$/i.test(jobId)) throw new Error("Invalid library media identifier");
+    if (!JOB_ID_PATTERN.test(jobId)) throw new Error("Invalid library media identifier");
     await fsp.rm(path.join(this.hlsRoot, jobId), { recursive: true, force: true });
     this.completedMedia.delete(mediaId);
     await this.saveManifest();
     return true;
+  }
+
+  async getOrphanedMedia() {
+    const [hlsEntries, uploadEntries] = await Promise.all([
+      fsp.readdir(this.hlsRoot, { withFileTypes: true }).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error)),
+      fsp.readdir(this.uploadRoot, { withFileTypes: true }).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error))
+    ]);
+    const listedJobIds = new Set([...this.completedMedia.keys()]
+      .map((mediaId) => String(mediaId).replace(/^local_/, ""))
+      .filter((jobId) => JOB_ID_PATTERN.test(jobId)));
+    const activeJobs = [...this.jobs.values()].filter((job) => !isTerminalJob(job));
+    const activeJobIds = new Set(activeJobs.map((job) => job.id));
+    const activeInputPaths = new Set(activeJobs.map((job) => path.resolve(job.inputPath)));
+    const orphaned = [];
+
+    for (const entry of hlsEntries) {
+      if (!entry.isDirectory() || !JOB_ID_PATTERN.test(entry.name) || listedJobIds.has(entry.name) || activeJobIds.has(entry.name)) continue;
+      const target = path.join(this.hlsRoot, entry.name);
+      orphaned.push({
+        id: `hls:${entry.name}`,
+        kind: "hls",
+        title: "Unlisted encoded video",
+        detail: "Generated HLS playlists and segments not present in My Library",
+        sizeBytes: await directoryBytes(target)
+      });
+    }
+
+    for (const entry of uploadEntries) {
+      if (!entry.isFile()) continue;
+      const target = path.join(this.uploadRoot, entry.name);
+      if (activeInputPaths.has(path.resolve(target))) continue;
+      orphaned.push({
+        id: `upload:${entry.name}`,
+        kind: "source",
+        title: "Unlisted temporary source",
+        detail: entry.name,
+        sizeBytes: (await fsp.stat(target)).size
+      });
+    }
+
+    return orphaned.sort((left, right) => right.sizeBytes - left.sizeBytes);
+  }
+
+  async getCompletedMediaStorage() {
+    const entries = await Promise.all([...this.completedMedia.values()].map(async (media) => {
+      const jobId = String(media.id || "").replace(/^local_/, "");
+      if (!JOB_ID_PATTERN.test(jobId)) return [media.id, 0];
+      return [media.id, await directoryBytes(path.join(this.hlsRoot, jobId))];
+    }));
+    return Object.fromEntries(entries);
+  }
+
+  async deleteOrphanedMedia(orphanId) {
+    const value = String(orphanId || "");
+    const activeJobs = [...this.jobs.values()].filter((job) => !isTerminalJob(job));
+    if (value.startsWith("hls:")) {
+      const jobId = value.slice("hls:".length);
+      if (!JOB_ID_PATTERN.test(jobId)) throw new Error("Invalid unlisted HLS identifier");
+      if (this.completedMedia.has(`local_${jobId}`)) throw new Error("This is a listed library title; use its normal Delete button");
+      if (activeJobs.some((job) => job.id === jobId)) throw new Error("This video is still being processed and cannot be deleted");
+      await fsp.rm(path.join(this.hlsRoot, jobId), { recursive: true, force: true });
+      return true;
+    }
+
+    if (value.startsWith("upload:")) {
+      const filename = value.slice("upload:".length);
+      if (!filename || path.basename(filename) !== filename) throw new Error("Invalid unlisted source identifier");
+      const target = path.join(this.uploadRoot, filename);
+      if (activeJobs.some((job) => path.resolve(job.inputPath) === path.resolve(target))) {
+        throw new Error("This source is still being processed and cannot be deleted");
+      }
+      await fsp.unlink(target).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+      return true;
+    }
+
+    throw new Error("Invalid unlisted library item");
   }
 
   createJob({ originalName, inputPath, sourceUrl = null }) {
@@ -331,23 +444,51 @@ export class MediaTranscoder {
       outputDirectory,
       inputPath,
       sourceUrl,
+      sourceFingerprint: sourceFingerprint(sourceUrl),
+      cancelled: false,
+      abortController: null,
+      activeCommand: null,
       media: null
     };
   }
 
-  failJob(job, error) {
-    job.status = "failed";
-    job.error = error.message || "Transcoding failed";
-    job.updatedAt = new Date().toISOString();
-    void this.cleanupJob(job);
+  async failJob(job, error) {
+    const terminalStatus = job.cancelled ? "cancelled" : "failed";
+    this.updateJob(job, {
+      status: "cleaning up",
+      error: job.cancelled ? "Cancelled by host" : (error.message || "Transcoding failed")
+    });
     console.error(`HLS transcode ${job.id} failed:`, error);
+    await this.cleanupJob(job);
+    this.updateJob(job, { status: terminalStatus });
+  }
+
+  cancelJob(jobId) {
+    const job = this.jobs.get(jobId);
+    if (!job) return null;
+    if (isTerminalJob(job)) return this.serializeJob(job);
+    job.cancelled = true;
+    this.updateJob(job, { status: "cancelling", error: null });
+    job.abortController?.abort();
+    job.activeCommand?.kill("SIGKILL");
+    return this.serializeJob(job);
+  }
+
+  cancelAllJobs() {
+    return [...this.jobs.values()]
+      .filter((job) => !isTerminalJob(job))
+      .map((job) => this.cancelJob(job.id));
+  }
+
+  throwIfCancelled(job) {
+    if (job.cancelled) throw new Error("Cancelled by host");
   }
 
   start(file) {
     const job = this.createJob({ originalName: file.originalname, inputPath: file.path });
     this.jobs.set(job.id, job);
     void this.process(job).catch((error) => {
-      this.failJob(job, error);
+      void this.failJob(job, error);
     });
 
     return this.serializeJob(job);
@@ -361,7 +502,7 @@ export class MediaTranscoder {
     });
     this.jobs.set(job.id, job);
     void this.downloadAndProcess(job, maxBytes).catch((error) => {
-      this.failJob(job, error);
+      void this.failJob(job, error);
     });
     return this.serializeJob(job);
   }
@@ -369,33 +510,38 @@ export class MediaTranscoder {
   async downloadAndProcess(job, maxBytes) {
     this.updateJob(job, { status: "downloading video", progress: 1 });
     const abortController = new AbortController();
-    const { response, finalUrl } = await getDownloadResponse(job.sourceUrl, abortController.signal);
-    const contentLength = asNumber(response.headers.get("content-length"));
-    if (contentLength && contentLength > maxBytes) {
-      throw new Error(`The direct video file is larger than the currently available ${Math.floor(maxBytes / 1024 / 1024)} MB import limit`);
-    }
-    job.originalName = filenameFromRemoteUrl(finalUrl, response.headers.get("content-disposition"));
-    let downloadedBytes = 0;
-    const limiter = new Transform({
-      transform: (chunk, _encoding, callback) => {
-        downloadedBytes += chunk.length;
-        if (downloadedBytes > maxBytes) {
-          abortController.abort();
-          callback(new Error(`The direct video exceeded the ${Math.floor(maxBytes / 1024 / 1024)} MB import limit`));
-          return;
-        }
-        const downloadProgress = contentLength ? Math.round((downloadedBytes / contentLength) * 18) : Math.min(18, Math.round(downloadedBytes / maxBytes * 18));
-        this.updateJob(job, { progress: clamp(downloadProgress, 1, 18) });
-        callback(null, chunk);
-      }
-    });
+    job.abortController = abortController;
     try {
+      const { response, finalUrl } = await getDownloadResponse(job.sourceUrl, abortController.signal);
+      this.throwIfCancelled(job);
+      const contentLength = asNumber(response.headers.get("content-length"));
+      if (contentLength && contentLength > maxBytes) {
+        throw new Error(`The direct video file is larger than the currently available ${Math.floor(maxBytes / 1024 / 1024)} MB import limit`);
+      }
+      job.originalName = filenameFromRemoteUrl(finalUrl, response.headers.get("content-disposition"));
+      let downloadedBytes = 0;
+      const limiter = new Transform({
+        transform: (chunk, _encoding, callback) => {
+          downloadedBytes += chunk.length;
+          if (downloadedBytes > maxBytes) {
+            abortController.abort();
+            callback(new Error(`The direct video exceeded the ${Math.floor(maxBytes / 1024 / 1024)} MB import limit`));
+            return;
+          }
+          const downloadProgress = contentLength ? Math.round((downloadedBytes / contentLength) * 18) : Math.min(18, Math.round(downloadedBytes / maxBytes * 18));
+          this.updateJob(job, { progress: clamp(downloadProgress, 1, 18) });
+          callback(null, chunk);
+        }
+      });
       await pipeline(Readable.fromWeb(response.body), limiter, fs.createWriteStream(job.inputPath, { flags: "wx" }));
+      if (!downloadedBytes) throw new Error("The direct video download was empty");
     } catch (error) {
       await fsp.unlink(job.inputPath).catch(() => {});
       throw error;
+    } finally {
+      job.abortController = null;
     }
-    if (!downloadedBytes) throw new Error("The direct video download was empty");
+    this.throwIfCancelled(job);
     await this.process(job);
   }
 
@@ -408,6 +554,7 @@ export class MediaTranscoder {
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       error: job.error,
+      sourceType: job.sourceUrl ? "url" : "upload",
       media: job.media
     };
   }
@@ -454,6 +601,7 @@ export class MediaTranscoder {
   }
 
   async process(job) {
+    this.throwIfCancelled(job);
     const beforeProcess = await this.getStorageStats();
     if (beforeProcess.usedBytes > this.quotaBytes - QUOTA_GUARD_BYTES) {
       throw new Error(`The ${Math.round(this.quotaBytes / 1024 / 1024 / 1024)} GB library storage limit has been reached. Delete a library title before importing another.`);
@@ -481,19 +629,24 @@ export class MediaTranscoder {
 
     this.updateJob(job, { status: "creating preview", progress: Math.max(job.progress, 10) });
     await this.createPreview(job.inputPath, path.join(job.outputDirectory, "preview.mp4"));
+    this.throwIfCancelled(job);
 
     this.updateJob(job, { status: "creating poster thumbnail", progress: Math.max(job.progress, 15) });
     const posterCreated = await this.createPoster(job.inputPath, path.join(job.outputDirectory, "poster.jpg"), duration);
+    this.throwIfCancelled(job);
 
     this.updateJob(job, { status: "creating HLS variants", progress: Math.max(job.progress, 20) });
     await this.createHls(job, { hasAudio, qualities });
+    this.throwIfCancelled(job);
 
     this.updateJob(job, { status: "creating seek previews", progress: Math.max(job.progress, 82) });
     const thumbnailVtt = await this.createThumbnailSprite(job, { duration, width, height });
+    this.throwIfCancelled(job);
 
     this.updateJob(job, { status: "extracting subtitles and chapters", progress: Math.max(job.progress, 90) });
     const subtitleTracks = await this.extractSubtitles(job, subtitleStreams);
     const chaptersVtt = await this.writeChapters(job, metadata.chapters || []);
+    this.throwIfCancelled(job);
 
     const baseUrl = `${this.publicBasePath}/${job.id}`;
     const media = {
@@ -523,6 +676,7 @@ export class MediaTranscoder {
       mediaType: "movie",
       provider: "Personal library",
       availabilityLabel: "YOUR UPLOAD",
+      ...(job.sourceFingerprint ? { sourceFingerprint: job.sourceFingerprint } : {}),
       playable: true,
       isFeatured: false
     };
@@ -614,7 +768,12 @@ export class MediaTranscoder {
       })
       .output(playlistTemplate);
 
-    await this.runWithQuotaGuard(command);
+    job.activeCommand = command;
+    try {
+      await this.runWithQuotaGuard(command);
+    } finally {
+      job.activeCommand = null;
+    }
   }
 
   async createThumbnailSprite(job, { duration, width, height }) {

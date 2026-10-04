@@ -57,6 +57,16 @@ The startup log confirms the effective settings:
 6. Add more titles while free shared storage remains. Select **Delete** only for
    titles you want to remove and reclaim storage from.
 
+URL imports are server jobs, not browser uploads. Once submitted, the same URL
+is accepted only once: a repeated submission reconnects to the existing job and
+shows its progress instead of downloading it again. Reloading or closing the
+browser does not stop the download or encode; reopening the library manager
+loads the active server job and resumes the live progress display.
+
+If a server job is no longer wanted, use **Cancel & delete job** in the active
+job panel. It stops the download or FFmpeg encode and removes that job's
+temporary source and partial HLS files. It does not remove completed titles.
+
 If the controls are not displayed, the current session does not have host
 access. Sign out, sign back in with the configured verified account, and check
 the backend startup log for the effective host email.
@@ -86,6 +96,16 @@ The worker does the following:
    The encode is stopped before the 15 GB limit is crossed.
 5. Saves completed metadata to `library.json`, then removes the original
    source. The adaptive HLS package remains available for playback.
+
+During an active URL import, the storage meter includes both the temporary
+downloaded source and the HLS files already being generated. For example, a
+4.5 GB source plus 1.5 GB of HLS segments correctly displays about 6 GB in use.
+This is not a duplicate download. The manager shows both values separately and
+the temporary source is removed after a successful encode.
+
+The storage meter also lists the exact encoded disk usage beside every playable
+library title. Any space that cannot be attributed to a listed title appears as
+**Unlisted server files**, where each item has its own size and Delete control.
 
 Only one import/encoding job runs at a time, but the library can retain multiple
 completed movies. This keeps the storage budget predictable while allowing the
@@ -148,5 +168,6 @@ and redirect chains are rejected.
 | Upload controls are missing | The browser asked `/api/library/access` and the current token is not the configured host. Use normal verified sign-in; demo profiles cannot manage media. |
 | `EADDRINUSE` on port 5001 | Another backend already owns the port. Stop the old process, then start one backend with `npm run dev`. |
 | Upload is rejected as too large | Reduce the source to the live limit shown in the manager. It reaches 10 GB only when at least 15 GB is free for the source and HLS workspace. |
+| Storage is used but a video is missing from My Library | An interrupted job left an unlisted temporary source or HLS folder. The manager lists it under **Unlisted server files** with its size and an individual host-only Delete button. |
 | Video is not visible after restart | Confirm `server/media/hls/<job-id>/master.m3u8` and `server/media/library.json` still exist and the backend can read `server/media/`. |
 | Cross-device voice is unavailable | Browsers require HTTPS for microphone access outside `localhost`; configure HTTPS before using voice chat on phones or remote devices. |
