@@ -1,4 +1,6 @@
 import "dotenv/config";
+import dns from "node:dns";
+dns.setDefaultResultOrder("ipv4first");
 import crypto from "crypto";
 import http from "http";
 import path from "path";
@@ -17,6 +19,11 @@ import {
   resolveArchiveStreamUrl,
   searchLiveMedia
 } from "./freeMovieApi.js";
+import {
+  getSeriesEpisodes,
+  getTopTvSeries,
+  STREAMABLE_CLASSIC_SERIES
+} from "./seriesApi.js";
 import { isSupportedVideo, MediaTranscoder } from "./transcoder.js";
 import { setupWatchParty } from "./watchParty.js";
 import { WatchProgress } from "./watchProgress.js";
@@ -230,6 +237,31 @@ async function startServer() {
       res.json({ movies: catalog.all.filter((media) => media.playable) });
     } catch (err) {
       res.status(502).json({ error: "Free movies are temporarily unavailable", detail: err.message });
+    }
+  });
+
+  // 3b. Get Series & Shows listing (both streamable series and top TV shows)
+  app.get("/api/series", async (req, res) => {
+    try {
+      const topShows = await getTopTvSeries(30);
+      const allSeries = [...STREAMABLE_CLASSIC_SERIES, ...topShows];
+      res.json({
+        series: allSeries,
+        total: allSeries.length,
+        streamableCount: STREAMABLE_CLASSIC_SERIES.length
+      });
+    } catch (err) {
+      res.status(502).json({ error: "Series catalog is temporarily unavailable", detail: err.message });
+    }
+  });
+
+  // 3c. Get Seasons & Episodes for a specific series
+  app.get("/api/series/:id/episodes", async (req, res) => {
+    try {
+      const episodesData = await getSeriesEpisodes(req.params.id);
+      res.json(episodesData);
+    } catch (err) {
+      res.status(502).json({ error: "Episodes temporarily unavailable", detail: err.message });
     }
   });
 

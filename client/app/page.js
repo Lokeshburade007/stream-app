@@ -427,16 +427,24 @@ export default function Home() {
 
         {/* Category Rows from live catalog */}
         {!searchQuery.trim() &&
-          categories.map((cat) => (
-            <MovieRow
-              key={cat.id}
-              title={cat.title}
-              items={cat.items}
-              onPlay={handlePlayMovie}
-              onStartWatchParty={handleStartWatchParty}
-              onOpenInfo={(m) => setInfoModalMovie(m)}
-            />
-          ))}
+          categories.map((cat) => {
+            const anchorId = cat.id === "classic-series" ? "series" :
+                             cat.id === "trending-movies" ? "movies" :
+                             cat.id === "sci-fi-action" ? "scifi" :
+                             cat.id === "trending-now" ? "trending" : undefined;
+            return (
+              <MovieRow
+                key={cat.id}
+                id={anchorId}
+                title={cat.title}
+                subtitle={cat.subtitle}
+                items={cat.items}
+                onPlay={handlePlayMovie}
+                onStartWatchParty={handleStartWatchParty}
+                onOpenInfo={(m) => setInfoModalMovie(m)}
+              />
+            );
+          })}
       </section>
 
       {/* Multi-Device Architecture Banner */}

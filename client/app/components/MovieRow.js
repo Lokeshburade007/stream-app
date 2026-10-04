@@ -3,6 +3,7 @@
 import { Play, Users, Info } from "lucide-react";
 
 export default function MovieRow({
+  id,
   title,
   subtitle,
   items = [],
@@ -14,7 +15,7 @@ export default function MovieRow({
   if (!items || items.length === 0) return null;
 
   return (
-    <div className="row-container">
+    <div className="row-container" id={id}>
       <div className="row-header">
         <h2 className="row-title">{title}</h2>
         {subtitle && <span className="row-subtitle">{subtitle}</span>}

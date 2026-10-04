@@ -1,3 +1,8 @@
+import dns from "node:dns";
+dns.setDefaultResultOrder("ipv4first");
+import { MEDIA_CATALOG } from "./catalog.js";
+import { STREAMABLE_CLASSIC_SERIES, getTopTvSeries } from "./seriesApi.js";
+
 // Live, key-free catalogue providers.
 //
 // Internet Archive supplies the titles that can be played in StreamHub. TVMaze
@@ -328,6 +333,17 @@ export async function searchArchiveMovies(query, limit = 12) {
   }
 }
 
+async function discoverTrendingArchiveMovies() {
+  try {
+    const data = await fetchJson(archiveSearchUrl("", 24, "downloads desc"));
+    const movies = (data?.response?.docs || []).map(toArchiveMedia).filter(Boolean);
+    return movies.length ? movies : FALLBACK_OPEN_MOVIES;
+  } catch (error) {
+    console.warn("Global Internet Archive discovery unavailable:", error.message);
+    return FALLBACK_OPEN_MOVIES;
+  }
+}
+
 async function discoverIndianArchiveMovies() {
   try {
     const data = await fetchJson(archiveSearchUrl("", 18, "downloads desc", INDIA_ARCHIVE_FILTER));
@@ -443,45 +459,88 @@ async function discoverTmdbFocus() {
 }
 
 async function buildLiveCatalog() {
-  const [movies, series, tmdb] = await Promise.all([
+  const [globalMovies, indianMovies, airingSeries, topSeries, tmdb] = await Promise.all([
+    discoverTrendingArchiveMovies(),
     discoverIndianArchiveMovies(),
     discoverAiringSeries(),
+    getTopTvSeries(24),
     discoverTmdbFocus()
   ]);
-  const freeMovies = movies.length ? movies : FALLBACK_OPEN_MOVIES;
-  const all = [...freeMovies, ...series, ...CURATED_NETFLIX_GUIDES, ...tmdb.indianMovies, ...tmdb.indianSeries, ...tmdb.netflixMovies, ...tmdb.netflixSeries];
 
-  return {
-    featured: freeMovies[0] || series[0] || null,
-    categories: [
-      {
-        id: "free-to-stream",
-        title: "Indian Movies to Stream Now",
-        subtitle: "Live Internet Archive catalogue",
-        items: freeMovies
-      },
-      {
-        id: "indian-series-today",
-        title: "Indian Series Airing Today",
-        subtitle: "Live India schedule data from TVMaze",
-        items: series
-      },
+  const openMasters = (MEDIA_CATALOG || []).map((m) => ({
+    ...m,
+    playable: true
+  }));
+  const streamableMovies = [...openMasters, ...globalMovies];
+  const allSeries = [...STREAMABLE_CLASSIC_SERIES, ...topSeries, ...airingSeries];
+  const all = [
+    ...streamableMovies,
+    ...allSeries,
+    ...indianMovies,
+    ...CURATED_NETFLIX_GUIDES,
+    ...tmdb.indianMovies,
+    ...tmdb.indianSeries,
+    ...tmdb.netflixMovies,
+    ...tmdb.netflixSeries
+  ];
+
+  const featured = streamableMovies[0] || STREAMABLE_CLASSIC_SERIES[0] || null;
+
+  const categories = [
+    {
+      id: "classic-series",
+      title: "Classic TV Series (Watch Full Episodes)",
+      subtitle: "Multi-episode streamable series · Bonanza, Sherlock Holmes, Beverly Hillbillies & more",
+      items: STREAMABLE_CLASSIC_SERIES
+    },
+    {
+      id: "popular-tv-shows",
+      title: "Popular TV Shows & Series Guide",
+      subtitle: "Top-rated series with complete season and episode breakdown from TVMaze",
+      items: topSeries
+    },
+    {
+      id: "trending-movies",
+      title: "Trending Movies to Stream Now",
+      subtitle: "Full-length free feature films & open cinema masterpieces",
+      items: streamableMovies
+    },
+    {
+      id: "sci-fi-action",
+      title: "Sci-Fi & Cyberpunk Hits",
+      subtitle: "Futuristic thrillers and intergalactic space epics",
+      items: streamableMovies.filter((m) =>
+        (m.genres || []).some((g) => /sci-fi|cyberpunk|action|space/i.test(g))
+      ).slice(0, 15)
+    },
+    {
+      id: "free-to-stream",
+      title: "Indian Cinema Classics",
+      subtitle: "Golden era Bollywood and regional cinema from Internet Archive",
+      items: indianMovies
+    },
+    {
+      id: "indian-series-today",
+      title: "Series Airing Today",
+      subtitle: "Live schedule data from TVMaze",
+      items: airingSeries
+    },
+    ...(tmdb.configured ? [
       { id: "popular-indian-movies", title: "Popular Indian Movies", subtitle: "Live TMDB India guide", items: tmdb.indianMovies },
       { id: "popular-indian-series", title: "Popular Indian Series", subtitle: "Live TMDB India guide", items: tmdb.indianSeries },
       { id: "netflix-movies-india", title: "Netflix Movies in India", subtitle: "Availability via TMDB / JustWatch", items: tmdb.netflixMovies },
-      { id: "netflix-series-india", title: "Netflix Series in India", subtitle: "Availability via TMDB / JustWatch", items: tmdb.netflixSeries },
-      { id: "hindi-dubbed-netflix", title: "Hindi Dubbed on Netflix", subtitle: "Official India availability", items: CURATED_NETFLIX_GUIDES },
-      {
-        id: "classics",
-        title: "Indian Archive Classics",
-        subtitle: "Popular on Internet Archive",
-        items: [...freeMovies].sort((a, b) => b.matchScore - a.matchScore).slice(0, 12)
-      }
-    ].filter((category) => category.items.length),
+      { id: "netflix-series-india", title: "Netflix Series in India", subtitle: "Availability via TMDB / JustWatch", items: tmdb.netflixSeries }
+    ] : []),
+    { id: "hindi-dubbed-netflix", title: "Hindi Dubbed on Netflix", subtitle: "Official India availability", items: CURATED_NETFLIX_GUIDES }
+  ].filter((category) => category.items && category.items.length);
+
+  return {
+    featured,
+    categories,
     all,
     totalTitles: all.length,
     updatedAt: new Date().toISOString(),
-    sources: ["Internet Archive", "TVMaze", ...(tmdb.configured ? ["TMDB / JustWatch"] : [])],
+    sources: ["Internet Archive", "TVMaze", "Open Cinema", ...(tmdb.configured ? ["TMDB / JustWatch"] : [])],
     tmdbConfigured: tmdb.configured
   };
 }
@@ -512,6 +571,18 @@ export async function searchLiveMedia(query, limit = 10) {
   const trimmedQuery = cleanText(query);
   if (!trimmedQuery) return [];
 
+  // Match local catalog and classic series
+  const lowerQ = trimmedQuery.toLowerCase();
+  const matchedSeries = STREAMABLE_CLASSIC_SERIES.filter((s) =>
+    s.title.toLowerCase().includes(lowerQ) ||
+    (s.genres || []).some((g) => g.toLowerCase().includes(lowerQ))
+  );
+
+  const matchedOpen = (MEDIA_CATALOG || []).filter((m) =>
+    m.title.toLowerCase().includes(lowerQ) ||
+    (m.genres || []).some((g) => g.toLowerCase().includes(lowerQ))
+  );
+
   const [movies, tvResults, tmdbResults] = await Promise.all([
     searchArchiveMovies(trimmedQuery, limit),
     fetchJson(`${TVMAZE_ORIGIN}/search/shows?q=${encodeURIComponent(trimmedQuery)}`)
@@ -541,13 +612,52 @@ export async function searchLiveMedia(query, limit = 10) {
 
   const curatedResults = CURATED_NETFLIX_GUIDES.filter((item) => {
     const haystack = `${item.title} ${item.tagline} ${item.synopsis}`.toLowerCase();
-    return haystack.includes(trimmedQuery.toLowerCase());
+    return haystack.includes(lowerQ);
   });
 
-  return [...curatedResults, ...movies, ...tvResults, ...tmdbResults];
+  return [...matchedSeries, ...matchedOpen, ...curatedResults, ...movies, ...tvResults, ...tmdbResults];
 }
 
 export async function findLiveMedia(id) {
+  // Check open catalog
+  const open = (MEDIA_CATALOG || []).find((item) => item.id === id);
+  if (open) return { ...open, playable: true };
+
+  // Check classic series and episodes
+  for (const s of STREAMABLE_CLASSIC_SERIES) {
+    if (s.id === id) return s;
+    const ep = s.episodes?.find((e) => e.id === id || e.archiveIdentifier === id);
+    if (ep) {
+      return {
+        id: ep.id,
+        title: `${s.title}: ${ep.title}`,
+        tagline: `Season ${ep.season} Episode ${ep.number}`,
+        synopsis: ep.synopsis,
+        backdrop: ep.image,
+        poster: ep.image,
+        videoSource: ep.videoSource,
+        duration: 0,
+        durationFormatted: ep.duration,
+        year: s.year,
+        maturityRating: s.maturityRating,
+        resolution: s.resolution,
+        audio: s.audio,
+        matchScore: s.matchScore,
+        genres: s.genres,
+        cast: s.cast,
+        director: s.director,
+        category: s.category,
+        mediaType: "series",
+        provider: s.provider,
+        playable: true,
+        seriesId: s.id,
+        seasonNumber: ep.season,
+        episodeNumber: ep.number,
+        hasEpisodes: true
+      };
+    }
+  }
+
   const catalog = await getLiveCatalog();
   const cached = catalog.all.find((item) => item.id === id);
   if (cached) return cached;

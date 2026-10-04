@@ -34,6 +34,8 @@ export default function Navbar({
 
         <ul className="nav-links">
           <li><a href="#featured" className="nav-link active" suppressHydrationWarning>Home</a></li>
+          <li><a href="#series" className="nav-link" suppressHydrationWarning>TV Shows</a></li>
+          <li><a href="#movies" className="nav-link" suppressHydrationWarning>Movies</a></li>
           <li>
             <a
               href="#party"
@@ -49,7 +51,6 @@ export default function Navbar({
           </li>
           <li><a href="#trending" className="nav-link" suppressHydrationWarning>Trending</a></li>
           <li><a href="#scifi" className="nav-link" suppressHydrationWarning>Sci-Fi</a></li>
-          <li><a href="#action" className="nav-link" suppressHydrationWarning>Action</a></li>
         </ul>
       </div>
 
