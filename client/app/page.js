@@ -122,8 +122,8 @@ export default function Home() {
     }
   }, [user]);
 
-  // The server is the source of truth for host-only library access. This
-  // avoids a frontend environment value drifting from HOST_EMAIL on the API.
+  // The API is the source of truth for the fixed library administrator and
+  // the administrator-controlled member-upload permission.
   useEffect(() => {
     if (!authToken) return;
     let cancelled = false;
@@ -146,6 +146,10 @@ export default function Home() {
   const handlePlayMovie = (movie) => {
     if (!movie?.playable) {
       setInfoModalMovie(movie);
+      return;
+    }
+    if (!user || !authToken) {
+      setIsAuthModalOpen(true);
       return;
     }
     setWatchPartyRoom(null); // Solo playback
@@ -176,13 +180,19 @@ export default function Home() {
       setInfoModalMovie(movie);
       return;
     }
+    if (!user || !authToken) {
+      setIsAuthModalOpen(true);
+      return;
+    }
 
-    const socket = io(API_URL);
+    const socket = io(API_URL, {
+      auth: { token: authToken },
+      withCredentials: true
+    });
     const currentUser = getPartyParticipant();
 
     socket.emit("party:create", {
       mediaId: movie.id,
-      user: currentUser,
       hostOnlyControl
     });
 
@@ -198,9 +208,18 @@ export default function Home() {
       alert(message || "Unable to start a watch party.");
       socket.disconnect();
     });
+
+    socket.on("connect_error", (error) => {
+      alert(error.message === "AUTH_REQUIRED" ? "Your sign-in session expired. Please sign in again." : "Unable to connect to the watch party.");
+      socket.disconnect();
+    });
   };
 
   const handleJoinRoom = useCallback((roomCode) => {
+    if (!user || !authToken) {
+      setIsAuthModalOpen(true);
+      return;
+    }
     const openRoom = async () => {
       try {
         const roomResponse = await fetch(apiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`));
@@ -224,7 +243,7 @@ export default function Home() {
       }
     };
     openRoom();
-  }, [catalog, getPartyParticipant]);
+  }, [catalog, getPartyParticipant, user, authToken]);
 
   // 3. Handle Direct Room Link (e.g. ?room=XYZ) once the catalogue is ready.
   useEffect(() => {
@@ -236,6 +255,10 @@ export default function Home() {
   }, [catalog, handleJoinRoom]);
 
   const handleLogout = () => {
+    fetch(apiUrl("/api/auth/playback-session"), {
+      method: "DELETE",
+      credentials: "include"
+    }).catch(() => {});
     localStorage.removeItem("stream_user");
     localStorage.removeItem("stream_auth_token");
     setUser(null);
@@ -292,7 +315,13 @@ export default function Home() {
         user={user}
         onOpenAuth={() => setIsAuthModalOpen(true)}
         onLogout={handleLogout}
-        onOpenWatchPartyModal={() => setIsPartyModalOpen(true)}
+        onOpenWatchPartyModal={() => {
+          if (!user || !authToken) {
+            setIsAuthModalOpen(true);
+            return;
+          }
+          setIsPartyModalOpen(true);
+        }}
         onOpenLibrary={() => setIsLibraryModalOpen(true)}
         isHost={canManageLibrary}
         tvMode={tvMode}
@@ -530,6 +559,7 @@ export default function Home() {
         <CinemaPlayer
           movie={activePlayingMovie}
           user={user}
+          authToken={authToken}
           partyParticipant={partyParticipant}
           watchPartyRoom={watchPartyRoom}
           onClose={() => {

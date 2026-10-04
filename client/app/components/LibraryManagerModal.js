@@ -16,6 +16,7 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [updatingAccess, setUpdatingAccess] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState(null);
   const pollTimer = useRef(null);
 
@@ -191,15 +192,37 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
     await loadLibrary();
   };
 
+  const updateMemberUploadAccess = async (memberUploadsEnabled) => {
+    if (!authToken) return;
+    setUpdatingAccess(true);
+    setError("");
+    try {
+      const response = await fetch(apiUrl("/api/library/access"), {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ memberUploadsEnabled })
+      });
+      const permissions = await response.json();
+      if (!response.ok) throw new Error(permissions.error || "Unable to update member upload access");
+      setLibrary((current) => current ? { ...current, permissions } : current);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setUpdatingAccess(false);
+    }
+  };
+
   if (!isOpen) return null;
   const storage = library?.storage;
   const media = library?.media || [];
   const orphaned = library?.orphaned || [];
   const mediaStorage = library?.mediaStorage || {};
+  const permissions = library?.permissions || {};
+  const isAdmin = Boolean(permissions.isAdmin);
   const completedMediaBytes = media.reduce((total, item) => total + (mediaStorage[item.id] || 0), 0);
   const unlistedBytes = orphaned.reduce((total, item) => total + (item.sizeBytes || 0), 0);
   const hasActiveJob = Boolean(job && !["completed", "failed", "cancelled"].includes(job.status));
-  const canUpload = library && !storage?.activeJob && !hasActiveJob && library.maxUploadBytes >= 1024 * 1024;
+  const canUpload = Boolean(permissions.canUpload) && !storage?.activeJob && !hasActiveJob && library?.maxUploadBytes >= 1024 * 1024;
 
   return (
     <div
@@ -221,7 +244,7 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
         <div className="library-modal-header">
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ width: 38, height: 38, borderRadius: "50%", background: "rgba(70,211,105,.15)", display: "grid", placeItems: "center" }}><HardDrive size={20} color="#46d369" /></div>
-            <div><h2 id="library-manager-title" className="modal-title">Lokesh’s Video Library</h2><p style={{ fontSize: 12, color: "#888" }}>Host-only upload and deletion controls</p></div>
+            <div><h2 id="library-manager-title" className="modal-title">Lokesh’s Video Library</h2><p style={{ fontSize: 12, color: "#888" }}>Admin-controlled upload and deletion</p></div>
           </div>
           <button onClick={onClose} className="icon-btn" aria-label="Close library modal"><X size={20} /></button>
         </div>
@@ -234,6 +257,22 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
             <p style={{ fontSize: 12, color: "#aaa", marginTop: 9 }}>Keep multiple movies until this shared quota is full. Original sources are removed after encoding; adaptive HLS files remain for playback.</p>
             <p style={{ fontSize: 12, color: "#d1d5db", marginTop: 7 }}>Stored library videos: {formatBytes(completedMediaBytes)}{unlistedBytes > 0 ? ` · Unlisted server files: ${formatBytes(unlistedBytes)}` : ""}</p>
             {storage.activeJob && <p style={{ fontSize: 12, color: "#bfdbfe", marginTop: 7 }}>Live server usage: {formatBytes(storage.temporarySourceBytes)} temporary source + {formatBytes(storage.hlsBytes)} generated HLS. The temporary source is deleted when encoding completes.</p>}
+          </div>
+        )}
+
+        {isAdmin && (
+          <div style={{ background: "rgba(70,211,105,.08)", border: "1px solid rgba(70,211,105,.38)", borderRadius: 8, padding: 12 }}>
+            <strong style={{ display: "block", fontSize: 13, color: "#d1fae5" }}>Member upload permission</strong>
+            <label style={{ display: "flex", alignItems: "flex-start", gap: 9, marginTop: 8, color: "#d1d5db", cursor: updatingAccess ? "wait" : "pointer", fontSize: 12, lineHeight: 1.45 }}>
+              <input
+                type="checkbox"
+                checked={Boolean(permissions.memberUploadsEnabled)}
+                disabled={updatingAccess}
+                onChange={(event) => updateMemberUploadAccess(event.target.checked)}
+                style={{ marginTop: 2, width: 16, height: 16, accentColor: "#46d369" }}
+              />
+              <span><strong>Allow signed-in members to upload</strong><br />Only you ({permissions.adminEmail || "buradepiyush@gmail.com"}) can delete videos, cancel any upload, or change this setting.</span>
+            </label>
           </div>
         )}
 
@@ -376,7 +415,7 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
                 {item.durationFormatted} · Adaptive HLS ready · {formatBytes(mediaStorage[item.id])} stored
               </div>
             </div>
-            <button
+            {isAdmin && <button
               type="button"
               id={`btn-delete-movie-${item.id}`}
               onClick={(e) => {
@@ -391,7 +430,7 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
               style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "rgba(239,68,68,.15)", color: "#fca5a5", border: "1px solid #ef4444", borderRadius: 6, padding: "7px 11px", cursor: "pointer", fontWeight: 600 }}
             >
               <Trash2 size={15} /> Delete
-            </button>
+            </button>}
           </div>
         ))}
 
@@ -406,7 +445,7 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
                     <strong style={{ fontSize: 13 }}>{orphan.title}</strong>
                     <div style={{ color: "#fef3c7", fontSize: 11, marginTop: 3 }}>{formatBytes(orphan.sizeBytes)} · {orphan.detail}</div>
                   </div>
-                  <button
+                  {isAdmin && <button
                     type="button"
                     id={`btn-delete-orphan-${orphan.id.replace(/[^a-zA-Z0-9]/g, "-")}`}
                     onClick={(e) => {
@@ -421,7 +460,7 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
                     style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "rgba(239,68,68,.15)", color: "#fecaca", border: "1px solid #ef4444", borderRadius: 6, padding: "7px 11px", cursor: "pointer", fontWeight: 600 }}
                   >
                     <Trash2 size={15} /> Delete
-                  </button>
+                  </button>}
                 </div>
               ))}
             </div>
@@ -445,6 +484,12 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
               <p style={{ margin: 0, fontSize: 11, color: "#aaa" }}>Use a direct HTTPS video file URL for content you own or are authorized to store. The server validates redirects and downloads it within the remaining library space.</p>
               <button type="submit" disabled={loading || !remoteUrl.trim() || hasActiveJob} className="btn-party" style={{ justifyContent: "center" }}><Download size={16} /> Download, encode, and add to library</button>
             </form>
+          </div>
+        )}
+
+        {library && !canUpload && !isAdmin && (
+          <div style={{ color: "#fcd34d", background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.35)", padding: 11, borderRadius: 8, fontSize: 12, lineHeight: 1.5 }}>
+            Uploads are currently disabled by the library administrator. You can still watch titles after signing in.
           </div>
         )}
 

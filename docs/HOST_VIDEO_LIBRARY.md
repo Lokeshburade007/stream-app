@@ -7,32 +7,35 @@ Watch Party rooms.
 
 ## What the host can do
 
-Only the configured host can:
+Only the library administrator, `buradepiyush@gmail.com`, can:
 
 - view the storage meter and the current library title;
-- upload a supported source video;
-- monitor its HLS encoding progress; and
 - permanently delete the current title and every generated playback file.
 
-Other signed-in users and guests can watch a completed title and join a party
-for it, but cannot manage the library. The server, rather than the browser,
-enforces this rule.
+The administrator can enable or disable **Allow signed-in members to upload**
+from the Video Library dialog. This switch is off by default and is saved in
+`server/media/library-access.json`, so it survives a backend restart. When it
+is enabled, members may start and monitor only their own upload jobs; they can
+never delete a completed title, unlisted server files, or another member's
+job. The administrator can always upload, delete, and cancel any job.
+
+Guests cannot play a movie, join a Watch Party, chat, or use party voice.
+Every playable stream, HLS segment, party socket, and WebRTC signaling request
+is verified against a SecurePool login on the server.
 
 ## Host configuration
 
-Set these values in `server/.env`:
+Set the storage budget in `server/.env`:
 
 ```env
-# Exact email address of the verified SecurePool account allowed to manage media.
-HOST_EMAIL=buradepiyush@gmail.com
-
 # Total amount used by temporary source files and generated HLS files.
 VIDEO_STORAGE_QUOTA_GB=20
 ```
 
-`HOST_EMAIL` is case-insensitive, but it must match the email claim in the
-SecurePool access token. The one-click demo accounts are deliberately not host
-accounts and cannot be used to upload or delete.
+The administrator email is intentionally fixed to `buradepiyush@gmail.com` in
+the server authorization code. Quick-access demo login is disabled unless
+`ALLOW_QUICK_ACCESS=true` is explicitly set for local development; it can never
+issue an administrator account.
 
 After changing either value, restart the backend in production. In local
 development, `npm run dev` watches `.env` and `src/` and restarts automatically.
@@ -44,7 +47,7 @@ The startup log confirms the effective settings:
 
 ## Using the UI
 
-1. Sign in normally with the verified address configured in `HOST_EMAIL`.
+1. Sign in normally as `buradepiyush@gmail.com`.
 2. Select **Upload Video** in the navigation bar, or open the profile menu and
    choose **Manage 20 GB Video Library**.
 3. Either select a supported file and choose **Upload and encode**, or paste a
@@ -54,7 +57,10 @@ The startup log confirms the effective settings:
 5. When complete, refresh the catalogue if necessary. The title appears in
    **My Library** and can be played normally or selected when creating a Watch
    Party.
-6. Add more titles while free shared storage remains. Select **Delete** only for
+6. Optionally use **Allow signed-in members to upload** to grant upload-only
+   access to other logged-in accounts. Turn it off to immediately block new
+   member uploads.
+7. Add more titles while free shared storage remains. Select **Delete** only for
    titles you want to remove and reclaim storage from.
 
 Supported source containers are **MP4, MKV, MOV, M4V, and WebM**. The server
@@ -133,18 +139,22 @@ the file, FFmpeg, or quota caused the failure.
 
 ## API contract
 
-All management calls require a valid SecurePool bearer token for the configured
-host. Do not put an access token in source control, screenshots, or public
+All playback, party, and management calls require a valid SecurePool session.
+The app exchanges the bearer token for an HttpOnly playback cookie so native
+video players can request protected HLS files without exposing the token in a
+movie URL. Do not put an access token in source control, screenshots, or public
 documentation.
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/library/access` | Returns `{ canManage: true }` only for the configured host. The frontend uses this as the access source of truth. |
-| `GET` | `/api/library` | Returns storage usage, quota, allowed source size, and completed library metadata. |
-| `POST` | `/api/media/upload` | Accepts a multipart `video` field and begins an asynchronous HLS job. |
-| `POST` | `/api/media/import-url` | Downloads a validated public HTTPS direct-video URL to the server, then begins the HLS job. |
-| `GET` | `/api/media/uploads/:jobId` | Returns job state and percentage while encoding. |
-| `DELETE` | `/api/library/:mediaId` | Removes the completed HLS title and updates the manifest. |
+| `POST` | `/api/auth/playback-session` | Exchanges a valid bearer token for the protected, HttpOnly playback cookie. |
+| `GET` | `/api/library/access` | Returns the signed-in user's upload/delete permissions and the member-upload switch state. |
+| `PATCH` | `/api/library/access` | Administrator-only update of `{ "memberUploadsEnabled": true \| false }`. |
+| `GET` | `/api/library` | Returns storage and library metadata. Unlisted-file cleanup is administrator-only. |
+| `POST` | `/api/media/upload` | Administrator, or an allowed signed-in member, starts an HLS job. |
+| `POST` | `/api/media/import-url` | Administrator, or an allowed signed-in member, imports an authorized direct HTTPS video URL. |
+| `GET` | `/api/media/uploads/:jobId` | Returns job state only to its uploader or the administrator. |
+| `DELETE` | `/api/library/:mediaId` | Administrator-only removal of a completed HLS title and its files. |
 
 Example host upload:
 
@@ -168,8 +178,8 @@ and redirect chains are rejected.
 
 | Symptom | Cause and resolution |
 | --- | --- |
-| `Only Lokesh (Host)...` or `This account is not the configured library host` | A stale backend was running or the token belongs to another account. Restart the backend, sign out/in, and verify `HOST_EMAIL` in `server/.env`. |
-| Upload controls are missing | The browser asked `/api/library/access` and the current token is not the configured host. Use normal verified sign-in; demo profiles cannot manage media. |
+| `This account is not the configured library host` | The account is not `buradepiyush@gmail.com`. Only that verified SecurePool account may delete videos or change upload permission. |
+| Upload controls are missing | Member uploads are disabled, the account is not signed in, or an active job holds the single-job slot. The administrator can enable member uploads from Video Library. |
 | `EADDRINUSE` on port 5001 | Another backend already owns the port. Stop the old process, then start one backend with `npm run dev`. |
 | Upload is rejected as too large | Reduce the source to the live limit shown in the manager. It reaches 10 GB only when at least 20 GB is free for the source and HLS workspace. |
 | Storage is used but a video is missing from My Library | An interrupted job left an unlisted temporary source or HLS folder. The manager lists it under **Unlisted server files** with its size and an individual host-only Delete button. |

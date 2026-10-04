@@ -24,8 +24,9 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
   - Includes an installable web-app manifest for a standalone StreamHub home-screen experience.
   - Mobile microphone access and PWA installation require the production site to be served over HTTPS.
 - **Host-only 20 GB Personal Video Library**:
-  - A verified SecurePool host uploads one authorized source video, which is packaged as adaptive HLS for solo playback and Watch Parties.
-  - Multiple titles can share the strict storage cap. The host may upload a local source or import an authorized direct HTTPS video URL; originals are removed after a successful encode.
+  - `buradepiyush@gmail.com` is the only library administrator and the only account permitted to delete videos or unlisted server files.
+  - The administrator can enable or disable upload-only access for signed-in members; guests can never upload, delete, play, join a party, or use party voice.
+  - Multiple titles can share the strict storage cap. Allowed uploaders may upload a local source or import an authorized direct HTTPS video URL; originals are removed after a successful encode.
   - See [Host Video Library](docs/HOST_VIDEO_LIBRARY.md) for configuration, UI usage, APIs, storage logic, and troubleshooting.
 - **Free Movies Streaming API & Metadata**:
   - Integrated with the **Internet Archive Open Feature Films API** and Open Cinema projects.
@@ -45,7 +46,7 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
 - **SecurePool Authentication Framework (`securepool@1.1.3`)**:
   - RS256 asymmetric cryptographic JWT token signing (`private.pem` & `public.pem`).
   - Session tracking with device fingerprinting and MongoDB persistence.
-  - 1-Click Multi-Device Demo profiles for rapid testing on Smart TV, Laptop, and Phone.
+  - Server-enforced playback, Watch Party, chat, and voice access for authenticated sessions only.
   - Interactive Swagger API docs at `/docs`.
 - **Cross-Device "Continue Watching" Sync**:
   - Automatically saves playback timestamps to MongoDB every 5 seconds.
@@ -183,18 +184,20 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 |---|---|---|
 | `GET` | `/health` | Server health check |
 | `GET` | `/docs` | Swagger API documentation |
-| `POST` | `/auth/quick-access` | Instant 1-click SecurePool RS256 token issuance |
+| `POST` | `/auth/quick-access` | Disabled by default; local-only non-admin demo token when explicitly enabled |
 | `POST` | `/auth/login` | Standard SecurePool credential login |
 | `POST` | `/auth/register` | SecurePool account registration + OTP verification |
 | `GET` | `/api/media` | Full media catalog with categories and featured banner |
 | `GET` | `/api/media/:id` | Individual title metadata |
-| `GET` | `/api/media/stream/:id` | HTTP 206 Partial Content byte-range video stream |
-| `GET` | `/api/library/access` | Returns whether the signed-in user can manage the host video library |
-| `GET` | `/api/library` | Host-only quota, storage usage, and completed personal-library metadata |
-| `POST` | `/api/media/upload` | Host-only upload of a `video` multipart field and start background HLS encoding |
-| `POST` | `/api/media/import-url` | Host-only server-side import of an authorized direct HTTPS video file URL |
+| `POST` | `/api/auth/playback-session` | Creates protected playback cookie from a SecurePool bearer token |
+| `GET` | `/api/media/stream/:id` | Authenticated HTTP 206 Partial Content byte-range video stream |
+| `GET` | `/api/library/access` | Returns signed-in library permissions and member upload setting |
+| `PATCH` | `/api/library/access` | Admin-only member upload toggle |
+| `GET` | `/api/library` | Authenticated quota, storage usage, and completed library metadata |
+| `POST` | `/api/media/upload` | Admin or admin-authorized member upload of a `video` multipart field |
+| `POST` | `/api/media/import-url` | Admin or admin-authorized member HTTPS video import |
 | `GET` | `/api/media/uploads/:jobId` | Retrieve HLS encoding job status and completed media metadata |
-| `DELETE` | `/api/library/:mediaId` | Host-only deletion of a completed personal-library title and its HLS files |
+| `DELETE` | `/api/library/:mediaId` | Administrator-only deletion of a completed personal-library title and its HLS files |
 | `GET` | `/api/movies/free` | Curated free streaming movies list |
 | `GET` | `/api/movies/search?q=...` | Live Internet Archive free movie search |
 | `POST` | `/api/user/progress` | Save playback timestamp (cross-device resume) |
@@ -203,9 +206,10 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ### Uploading a personal video
 
-The personal library is host-only and has a strict total storage quota. Sign in
-with the verified `HOST_EMAIL`, open **Upload Video**, and use the library
-manager. Full behavior and authenticated API examples are in
+The personal library has a strict total storage quota. Sign in as
+`buradepiyush@gmail.com` to manage deletion and member upload access; upload
+permission for other signed-in accounts is controlled from the library manager.
+Full behavior and authenticated API examples are in
 [Host Video Library](docs/HOST_VIDEO_LIBRARY.md).
 
 ---

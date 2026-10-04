@@ -21,30 +21,48 @@ export function setupWatchParty(io, tokenService, getMediaById) {
     };
   }
 
+  function getVerifiedSocketUser(token, verified) {
+    try {
+      const encodedPayload = token.split(".")[1];
+      const payload = encodedPayload
+        ? JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf-8"))
+        : {};
+      const claims = { ...verified, ...payload };
+      const email = String(claims.email || "").trim().toLowerCase();
+      if (!claims.sub || !email) return null;
+      return {
+        userId: claims.sub,
+        email,
+        name: String(claims.name || email.split("@")[0]).trim() || "Viewer"
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  // A watch party, its chat, and its WebRTC signaling are private to a
+  // SecurePool session. Event payloads never get to choose the user identity.
+  io.use(async (socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token || !tokenService) return next(new Error("AUTH_REQUIRED"));
+    try {
+      const verified = await tokenService.verifyAccessToken(token);
+      const user = verified ? getVerifiedSocketUser(token, verified) : null;
+      if (!user) return next(new Error("AUTH_REQUIRED"));
+      socket.data.user = user;
+      next();
+    } catch {
+      next(new Error("AUTH_REQUIRED"));
+    }
+  });
+
   // Namespace or root io connection
   io.on("connection", (socket) => {
     let currentRoomCode = null;
-    let currentUser = null;
-
-    // Authenticate socket using securepool token if provided
-    socket.on("auth", async (token) => {
-      try {
-        if (token && tokenService) {
-          const payload = await tokenService.verifyAccessToken(token);
-          currentUser = {
-            userId: payload.sub,
-            email: payload.email || "Viewer",
-            name: (payload.email || "Friend").split("@")[0],
-          };
-          socket.emit("auth:success", currentUser);
-        }
-      } catch (err) {
-        socket.emit("auth:error", "Invalid authentication token");
-      }
-    });
+    const currentUser = socket.data.user;
 
     // 1. Create a new Watch Party Room
-    socket.on("party:create", async ({ mediaId, user, hostOnlyControl = false }) => {
+    socket.on("party:create", async ({ mediaId, hostOnlyControl = false } = {}) => {
       let media = null;
       try {
         media = await getMediaById?.(mediaId);
@@ -58,7 +76,7 @@ export function setupWatchParty(io, tokenService, getMediaById) {
         return;
       }
       const roomCode = generateRoomCode();
-      const userData = normalizeUser(user || currentUser, socket, "Host User");
+      const userData = normalizeUser(currentUser, socket, "Host User");
 
       const room = {
         code: roomCode,
@@ -92,7 +110,7 @@ export function setupWatchParty(io, tokenService, getMediaById) {
     });
 
     // 2. Join an existing Watch Party Room
-    socket.on("party:join", ({ roomCode, user }) => {
+    socket.on("party:join", ({ roomCode } = {}) => {
       const code = (roomCode || "").toUpperCase().trim();
       const room = rooms.get(code);
 
@@ -102,10 +120,9 @@ export function setupWatchParty(io, tokenService, getMediaById) {
         return;
       }
 
-      const userData = normalizeUser(user || currentUser, socket, `Friend ${room.participants.size + 1}`);
+      const userData = normalizeUser(currentUser, socket, `Friend ${room.participants.size + 1}`);
 
       currentRoomCode = code;
-      currentUser = userData;
 
       socket.join(code);
 
@@ -209,6 +226,7 @@ export function setupWatchParty(io, tokenService, getMediaById) {
       if (!room) return;
 
       const participant = room.participants.get(socket.id);
+      if (!participant) return;
       const senderName = participant ? participant.name : (currentUser?.name || "Friend");
 
       const messageObj = {
@@ -233,6 +251,7 @@ export function setupWatchParty(io, tokenService, getMediaById) {
       if (!room) return;
 
       const participant = room.participants.get(socket.id);
+      if (!participant) return;
       io.to(currentRoomCode).emit("party:emoji_reaction", {
         id: `rx_${Date.now()}_${Math.random()}`,
         emoji: emoji || "🍿",

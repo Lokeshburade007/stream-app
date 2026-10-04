@@ -39,18 +39,35 @@ const LIBRARY_QUOTA_BYTES = (Number.isFinite(configuredQuotaGb) && configuredQuo
 // standard 20 GB quota, the 10 GB source cap leaves 10 GB for the encode.
 const MAX_UPLOAD_BYTES = Math.min(10 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * (2 / 3)));
 const TRANSCODE_HEADROOM_BYTES = Math.max(1024 * 1024 * 1024, Math.min(2 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * 0.1)));
-const HOST_CONFIG = (process.env.HOST_EMAIL || "buradepiyush@gmail.com").trim().toLowerCase();
-const HOST_EMAIL = HOST_CONFIG;
-const HOST_EMAILS = new Set([
-  HOST_CONFIG,
-  "buradepiyush@gmail.com",
-  "lokesh-demo@streamhub.io",
-  "lokeshburade007@gmail.com"
-]);
+// Library administration is deliberately a single-account permission. Do not
+// add demo or convenience accounts here: uploads and deletion affect the VPS.
+const LIBRARY_ADMIN_EMAIL = "buradepiyush@gmail.com";
+const HOST_EMAIL = LIBRARY_ADMIN_EMAIL;
+const PLAYBACK_COOKIE_NAME = "streamhub_playback";
+const LIBRARY_ACCESS_FILE = path.join(MEDIA_ROOT, "library-access.json");
 
-function isHostEmail(email) {
-  if (!email) return false;
-  return HOST_EMAILS.has(String(email).trim().toLowerCase());
+function isLibraryAdmin(email) {
+  return Boolean(email) && String(email).trim().toLowerCase() === LIBRARY_ADMIN_EMAIL;
+}
+
+function readCookie(req, name) {
+  const rawCookies = req.headers.cookie || "";
+  for (const entry of rawCookies.split(";")) {
+    const separator = entry.indexOf("=");
+    if (separator === -1) continue;
+    if (entry.slice(0, separator).trim() !== name) continue;
+    try {
+      return decodeURIComponent(entry.slice(separator + 1).trim());
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function bearerToken(req) {
+  const authorization = req.headers.authorization || "";
+  return authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : null;
 }
 
 // Read JWT RSA Keys
@@ -140,13 +157,41 @@ async function startServer() {
 
   const { app, authMiddleware, tokenService } = securePool;
 
-  const getAccessClaims = async (req) => {
-    const authorization = req.headers.authorization || "";
-    if (!authorization.startsWith("Bearer ")) {
-      return null;
+  // The browser client is served through the reverse proxy in production and
+  // through localhost:3000 in development. Reflecting the request origin here
+  // lets credentialed HLS requests work without using a wildcard CORS header.
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+      res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Tenant-Id");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+      res.setHeader("Vary", "Origin");
     }
+    if (req.method === "OPTIONS") return res.sendStatus(204);
+    next();
+  });
+
+  let memberUploadsEnabled = false;
+  try {
+    const savedAccess = JSON.parse(await fs.promises.readFile(LIBRARY_ACCESS_FILE, "utf-8"));
+    memberUploadsEnabled = Boolean(savedAccess.memberUploadsEnabled);
+  } catch (error) {
+    if (error.code !== "ENOENT") console.warn("Unable to load library access settings:", error.message);
+  }
+
+  const saveLibraryAccess = async () => {
+    await fs.promises.mkdir(MEDIA_ROOT, { recursive: true });
+    const temporaryPath = `${LIBRARY_ACCESS_FILE}.${crypto.randomUUID()}.tmp`;
+    await fs.promises.writeFile(temporaryPath, JSON.stringify({ memberUploadsEnabled }, null, 2));
+    await fs.promises.rename(temporaryPath, LIBRARY_ACCESS_FILE);
+  };
+
+  const getAccessClaims = async (req) => {
+    const token = bearerToken(req) || readCookie(req, PLAYBACK_COOKIE_NAME);
+    if (!token) return null;
     try {
-      const token = authorization.slice("Bearer ".length);
       const verified = await tokenService.verifyAccessToken(token);
       if (!verified) return null;
 
@@ -162,17 +207,73 @@ async function startServer() {
     }
   };
 
-  const requireHost = async (req, res, next) => {
+  const requireSignedIn = async (req, res, next) => {
     const claims = await getAccessClaims(req);
     if (!claims) {
-      return res.status(401).json({ error: "Your sign-in session is missing or expired. Sign in again as Lokesh (Host)." });
+      return res.status(401).json({ error: "Sign in with SecurePool to access playback, watch parties, or voice chat." });
     }
-    if (!isHostEmail(claims.email)) {
-      return res.status(403).json({ error: `This account is not the configured library host. Sign in as ${HOST_EMAIL}.` });
-    }
-    req.hostUser = { userId: claims.sub, email: claims.email };
+    req.authUser = { userId: claims.sub, email: String(claims.email || "").trim().toLowerCase(), name: claims.name };
     next();
   };
+
+  const requireLibraryAdmin = async (req, res, next) => {
+    const claims = await getAccessClaims(req);
+    if (!claims) {
+      return res.status(401).json({ error: "Your sign-in session is missing or expired. Sign in as the library administrator." });
+    }
+    if (!isLibraryAdmin(claims.email)) {
+      return res.status(403).json({ error: `This account is not the configured library host. Sign in as ${HOST_EMAIL}.` });
+    }
+    req.authUser = { userId: claims.sub, email: String(claims.email || "").trim().toLowerCase(), name: claims.name };
+    next();
+  };
+
+  const requireLibraryUploader = async (req, res, next) => {
+    const claims = await getAccessClaims(req);
+    if (!claims) {
+      return res.status(401).json({ error: "Sign in to upload a video." });
+    }
+    const email = String(claims.email || "").trim().toLowerCase();
+    if (!isLibraryAdmin(email) && !memberUploadsEnabled) {
+      return res.status(403).json({ error: `Video uploads are currently restricted to ${LIBRARY_ADMIN_EMAIL}. The administrator can enable member uploads from Video Library.` });
+    }
+    req.authUser = { userId: claims.sub, email, name: claims.name };
+    next();
+  };
+
+  const getLibraryPermissions = (email) => {
+    const isAdmin = isLibraryAdmin(email);
+    return {
+      isAdmin,
+      canDelete: isAdmin,
+      canUpload: isAdmin || memberUploadsEnabled,
+      memberUploadsEnabled,
+      adminEmail: LIBRARY_ADMIN_EMAIL
+    };
+  };
+
+  const playbackCookieOptions = (req) => ({
+    httpOnly: true,
+    sameSite: "lax",
+    secure: req.secure || req.headers["x-forwarded-proto"] === "https",
+    maxAge: 24 * 60 * 60 * 1000,
+    path: "/"
+  });
+
+  app.post("/api/auth/playback-session", async (req, res) => {
+    const token = bearerToken(req);
+    const claims = token ? await getAccessClaims(req) : null;
+    if (!claims) return res.status(401).json({ error: "Sign in again to start a protected playback session." });
+    res.cookie(PLAYBACK_COOKIE_NAME, token, playbackCookieOptions(req));
+    res.status(204).end();
+  });
+
+  app.delete("/api/auth/playback-session", (req, res) => {
+    const options = playbackCookieOptions(req);
+    delete options.maxAge;
+    res.clearCookie(PLAYBACK_COOKIE_NAME, options);
+    res.status(204).end();
+  });
 
   const upload = multer({
     storage: {
@@ -269,7 +370,8 @@ async function startServer() {
   // Setup WebSocket with Socket.io for Real-Time Watch Parties
   const io = new SocketIOServer(httpServer, {
     cors: {
-      origin: "*",
+      origin: true,
+      credentials: true,
       methods: ["GET", "POST"]
     }
   });
@@ -282,7 +384,7 @@ async function startServer() {
 
   // HLS playlists change as an encode is published while immutable segments can
   // be cached aggressively. CORS is required for hls.js on a separate frontend.
-  app.use("/media/hls", (req, res, next) => {
+  app.use("/media/hls", requireSignedIn, (req, res, next) => {
     const match = req.path.match(/^\/([^\/]+)\/(?:v(\d+)\/)?(segment_\d+\.ts)$/);
     if (match) {
       const [, jobId, variantNum, segmentName] = match;
@@ -294,7 +396,6 @@ async function startServer() {
         ];
         for (const candidate of candidatePaths) {
           if (fs.existsSync(candidate)) {
-            res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
             res.setHeader("Content-Type", "video/mp2t");
             res.setHeader("Cache-Control", "public, max-age=86400, immutable");
@@ -306,7 +407,6 @@ async function startServer() {
     next();
   }, express.static(transcoder.hlsRoot, {
     setHeaders: (res, filePath) => {
-      res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
       if (filePath.endsWith(".m3u8")) {
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
@@ -327,34 +427,52 @@ async function startServer() {
   // all generated HLS assets share one strict server-side storage quota.
   app.get("/api/library/access", async (req, res) => {
     const claims = await getAccessClaims(req);
-    if (!claims) return res.status(401).json({ canManage: false });
-    res.json({
-      canManage: isHostEmail(claims.email)
-    });
+    if (!claims) return res.status(401).json({ canManage: false, canUpload: false, canDelete: false });
+    const permissions = getLibraryPermissions(claims.email);
+    res.json({ canManage: permissions.isAdmin, ...permissions });
   });
 
-  app.get("/api/library", requireHost, async (_req, res) => {
+  app.get("/api/library", requireSignedIn, async (req, res) => {
     const [storage, orphaned, mediaStorage] = await Promise.all([
       transcoder.getStorageStats(),
       transcoder.getOrphanedMedia(),
       transcoder.getCompletedMediaStorage()
     ]);
+    const permissions = getLibraryPermissions(req.authUser.email);
+    const activeJob = transcoder.getActiveJob();
+    const visibleActiveJob = activeJob && (permissions.isAdmin || jobOwners.get(activeJob.id) === req.authUser.email)
+      ? activeJob
+      : null;
     res.json({
       storage,
       maxUploadBytes: transcoder.getSourceLimit(storage),
-      activeJob: transcoder.getActiveJob(),
+      activeJob: visibleActiveJob,
       media: transcoder.getCompletedMedia(),
-      orphaned,
-      mediaStorage
+      orphaned: permissions.isAdmin ? orphaned : [],
+      mediaStorage,
+      permissions
     });
   });
 
-  app.post("/api/media/upload", requireHost, reserveLibraryImportSpace, async (req, res) => {
+  app.patch("/api/library/access", requireLibraryAdmin, async (req, res) => {
+    if (typeof req.body?.memberUploadsEnabled !== "boolean") {
+      return res.status(400).json({ error: "memberUploadsEnabled must be true or false" });
+    }
+    memberUploadsEnabled = req.body.memberUploadsEnabled;
+    await saveLibraryAccess();
+    res.json({ ...getLibraryPermissions(req.authUser.email) });
+  });
+
+  const jobOwners = new Map();
+  const canAccessJob = (req, jobId) => isLibraryAdmin(req.authUser?.email) || jobOwners.get(jobId) === req.authUser?.email;
+
+  app.post("/api/media/upload", requireLibraryUploader, reserveLibraryImportSpace, async (req, res) => {
     upload.single("video")(req, res, (error) => {
       if (error) return res.status(400).json({ error: error.message });
       if (!req.file) return res.status(400).json({ error: "Attach a video file in the 'video' field" });
 
       const job = transcoder.start(req.file);
+      jobOwners.set(job.id, req.authUser.email);
       res.status(202).json({
         message: "Upload accepted. Adaptive HLS encoding has started in the background.",
         job,
@@ -376,6 +494,9 @@ async function startServer() {
       });
     }
     if (existingImport?.type === "active") {
+      if (!canAccessJob(req, existingImport.job.id)) {
+        return res.status(403).json({ error: "Another member is already processing this video URL. Only that uploader or the library administrator can view its progress." });
+      }
       return res.status(200).json({
         message: "This direct video URL is already being processed. Showing its server-side progress.",
         alreadyStarted: true,
@@ -386,7 +507,7 @@ async function startServer() {
     next();
   };
 
-  app.post("/api/media/import-url", requireHost, preventDuplicateUrlImport, reserveLibraryImportSpace, (req, res) => {
+  app.post("/api/media/import-url", requireLibraryUploader, preventDuplicateUrlImport, reserveLibraryImportSpace, (req, res) => {
     if (req.existingImportJob) {
       return res.status(200).json({
         message: "This direct video URL is already being processed. Showing its server-side progress.",
@@ -396,6 +517,7 @@ async function startServer() {
       });
     }
     const job = transcoder.startRemoteImport(req.sourceUrl, req.maxSourceBytes);
+    jobOwners.set(job.id, req.authUser.email);
     res.status(202).json({
       message: "Server-side video download started. It will be validated, encoded, and added to the library when complete.",
       job,
@@ -403,7 +525,7 @@ async function startServer() {
     });
   });
 
-  app.delete("/api/library/:mediaId", requireHost, async (req, res) => {
+  app.delete("/api/library/:mediaId", requireLibraryAdmin, async (req, res) => {
     const activeJob = transcoder.getActiveJob();
     if (activeJob && req.params.mediaId === `local_${activeJob.id}`) {
       return res.status(409).json({ error: "This video is currently being processed. Click 'Cancel & delete job' to stop and delete it." });
@@ -417,7 +539,7 @@ async function startServer() {
     }
   });
 
-  app.delete("/api/library/orphans/:orphanId", requireHost, async (req, res) => {
+  app.delete("/api/library/orphans/:orphanId", requireLibraryAdmin, async (req, res) => {
     try {
       await transcoder.deleteOrphanedMedia(req.params.orphanId);
       const [storage, orphaned] = await Promise.all([
@@ -430,9 +552,10 @@ async function startServer() {
     }
   });
 
-  app.get("/api/media/uploads/:jobId", requireHost, async (req, res) => {
+  app.get("/api/media/uploads/:jobId", requireSignedIn, async (req, res) => {
     const job = transcoder.getJob(req.params.jobId);
     if (!job) return res.status(404).json({ error: "Upload job not found" });
+    if (!canAccessJob(req, job.id)) return res.status(403).json({ error: "Only the uploader or library administrator can view this upload job." });
     const storage = await transcoder.getStorageStats();
     res.json({
       ...job,
@@ -441,7 +564,8 @@ async function startServer() {
     });
   });
 
-  app.delete("/api/media/uploads/:jobId", requireHost, async (req, res) => {
+  app.delete("/api/media/uploads/:jobId", requireSignedIn, async (req, res) => {
+    if (!canAccessJob(req, req.params.jobId)) return res.status(403).json({ error: "Only the uploader or library administrator can cancel this upload job." });
     const job = transcoder.cancelJob(req.params.jobId);
     if (!job) return res.status(404).json({ error: "Upload job not found" });
     res.status(202).json({
@@ -522,7 +646,7 @@ async function startServer() {
   // cross-origin embedding (CORP), which prevents the <video> element from
   // playing them. Forwarding byte ranges keeps seeking and playback working
   // without weakening the upstream file's browser policy.
-  app.get("/api/archive/stream/:identifier", async (req, res) => {
+  app.get("/api/archive/stream/:identifier", requireSignedIn, async (req, res) => {
     const abortController = new AbortController();
     const abortUpstream = () => abortController.abort();
     req.once("aborted", abortUpstream);
@@ -549,7 +673,6 @@ async function startServer() {
         if (value) res.setHeader(name, value);
       };
       ["content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag"].forEach(copyHeader);
-      res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
       res.setHeader("Cache-Control", "private, no-store");
       res.status(upstream.status);
@@ -572,7 +695,7 @@ async function startServer() {
   });
 
   // 6. Legacy local sample stream retained for development previews.
-  app.get("/api/media/stream/:id", (req, res) => {
+  app.get("/api/media/stream/:id", requireSignedIn, (req, res) => {
     // Look for local video file in media/ folder
     const localVideoPath = path.resolve(__dirname, "../media/sample_teaser.mp4");
 
@@ -603,7 +726,6 @@ async function startServer() {
         "Accept-Ranges": "bytes",
         "Content-Length": chunksize,
         "Content-Type": "video/mp4",
-        "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-cache",
       };
 
@@ -614,7 +736,6 @@ async function startServer() {
         "Content-Length": fileSize,
         "Content-Type": "video/mp4",
         "Accept-Ranges": "bytes",
-        "Access-Control-Allow-Origin": "*",
       };
       res.writeHead(200, head);
       fs.createReadStream(localVideoPath).pipe(res);
@@ -700,8 +821,14 @@ async function startServer() {
   // 7. Instant Demo / Quick Access Login (generates valid RS256 token signed by SecurePool key)
   app.post("/auth/quick-access", async (req, res) => {
     try {
-      const { name = "Lokesh", email = "buradepiyush@gmail.com", tenantId = "default" } = req.body;
-      const isHost = isHostEmail(email);
+      if (process.env.ALLOW_QUICK_ACCESS !== "true") {
+        return res.status(404).json({ error: "Quick-access accounts are disabled on this server." });
+      }
+      const { name = "Demo Viewer", email = "demo-viewer@streamhub.invalid", tenantId = "default" } = req.body;
+      if (isLibraryAdmin(email)) {
+        return res.status(403).json({ error: "The library administrator must use the normal SecurePool sign-in flow." });
+      }
+      const isHost = isLibraryAdmin(email);
       const userId = `usr_${Buffer.from(email).toString("hex").substring(0, 12)}`;
 
       const accessToken = await tokenService.generateAccessToken(userId, tenantId, {

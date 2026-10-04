@@ -4,6 +4,8 @@ import { useState } from "react";
 import { X, ShieldCheck, UserCheck, Lock, Mail, User, Sparkles, Smartphone, Tv, Laptop, Crown } from "lucide-react";
 import { apiUrl } from "../lib/api";
 
+const quickAccessEnabled = process.env.NEXT_PUBLIC_ENABLE_QUICK_ACCESS === "true";
+
 export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
   const [isRegister, setIsRegister] = useState(false);
   const [email, setEmail] = useState("");
@@ -170,8 +172,8 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
           </div>
         )}
 
-        {/* 1-Click Instant Demo Login (For Quick Testing on TV/Phone/Laptop) */}
-        <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: 14, border: "1px solid rgba(255,255,255,0.08)" }}>
+        {/* Disabled in production so nobody can impersonate an administrator. */}
+        {quickAccessEnabled && <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: 14, border: "1px solid rgba(255,255,255,0.08)" }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: "#ffb703", display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
             <Sparkles size={14} />
             <span>1-CLICK MULTI-DEVICE DEMO PROFILES</span>
@@ -224,13 +226,13 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
               <span style={{ fontSize: 10, color: "#aaa" }}>Mobile Viewer</span>
             </button>
           </div>
-        </div>
+        </div>}
 
-        <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "2px 0" }}>
+        {quickAccessEnabled && <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "2px 0" }}>
           <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.1)" }} />
           <span style={{ fontSize: 12, color: "#666" }}>OR WITH CREDENTIALS</span>
           <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.1)" }} />
-        </div>
+        </div>}
 
         {/* Credentials Form */}
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>

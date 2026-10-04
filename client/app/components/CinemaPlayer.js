@@ -64,6 +64,7 @@ function parseStoryboardVtt(contents, vttUrl) {
 export default function CinemaPlayer({
   movie,
   user,
+  authToken,
   partyParticipant,
   watchPartyRoom = null,
   onClose,
@@ -110,6 +111,7 @@ export default function CinemaPlayer({
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [voiceMembers, setVoiceMembers] = useState([]);
   const [voiceError, setVoiceError] = useState("");
+  const [playbackSessionReady, setPlaybackSessionReady] = useState(false);
 
   const hideControlsTimer = useRef(null);
 
@@ -131,6 +133,40 @@ export default function CinemaPlayer({
   const isHlsStream = /\.m3u8(?:[?#]|$)/i.test(videoSrc);
   const externalSubtitleTracks = movie?.subtitleTracks || [];
   const availableSubtitleTracks = subtitleTracks.length ? subtitleTracks : externalSubtitleTracks;
+
+  // Native video requests cannot carry an Authorization header. Exchange the
+  // verified SecurePool token for a same-site HttpOnly cookie before loading
+  // any protected HLS playlist, segment, thumbnail, or video stream.
+  useEffect(() => {
+    let cancelled = false;
+    const establishPlaybackSession = async () => {
+      if (!authToken) {
+        if (!cancelled) {
+          setPlaybackSessionReady(false);
+          setIsLoading(false);
+          setPlaybackError("Sign in to play movies and join party voice.");
+        }
+        return;
+      }
+      try {
+        const response = await fetch(apiUrl("/api/auth/playback-session"), {
+          method: "POST",
+          headers: { Authorization: `Bearer ${authToken}` },
+          credentials: "include"
+        });
+        if (!response.ok) throw new Error("Your sign-in session has expired. Please sign in again.");
+        if (!cancelled) setPlaybackSessionReady(true);
+      } catch (error) {
+        if (!cancelled) {
+          setPlaybackSessionReady(false);
+          setIsLoading(false);
+          setPlaybackError(error.message || "Unable to verify your playback session.");
+        }
+      }
+    };
+    void establishPlaybackSession();
+    return () => { cancelled = true; };
+  }, [authToken]);
 
   const removeVoicePeer = useCallback((socketId) => {
     const peer = voicePeersRef.current.get(socketId);
@@ -195,8 +231,8 @@ export default function CinemaPlayer({
       leaveVoiceChat();
       return;
     }
-    if (!socketRef.current?.connected) {
-      setVoiceError("Join the watch party before starting voice chat.");
+    if (!authToken || !socketRef.current?.connected) {
+      setVoiceError("Sign in and join the watch party before starting voice chat.");
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -218,7 +254,7 @@ export default function CinemaPlayer({
     } catch (error) {
       setVoiceError(error.name === "NotAllowedError" ? "Microphone permission was blocked. Allow it in your browser settings." : "Unable to access your microphone.");
     }
-  }, [leaveVoiceChat]);
+  }, [authToken, leaveVoiceChat]);
 
   const toggleVoiceMute = useCallback(() => {
     if (!voiceJoinedRef.current) return;
@@ -244,7 +280,7 @@ export default function CinemaPlayer({
   // browsers use hls.js for adaptive switching and track selection.
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return undefined;
+    if (!video || !playbackSessionReady) return undefined;
 
     setPlaybackError("");
     setQualityLevels([]);
@@ -275,7 +311,11 @@ export default function CinemaPlayer({
     const hls = new Hls({
       enableWorker: true,
       capLevelToPlayerSize: true,
-      startLevel: -1
+      startLevel: -1,
+      xhrSetup: (xhr) => {
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Authorization", `Bearer ${authToken}`);
+      }
     });
     hlsRef.current = hls;
     hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
@@ -309,38 +349,42 @@ export default function CinemaPlayer({
       hls.destroy();
       if (hlsRef.current === hls) hlsRef.current = null;
     };
-  }, [videoSrc, isHlsStream]);
+  }, [videoSrc, isHlsStream, playbackSessionReady, authToken]);
 
   useEffect(() => {
     const vttPath = movie?.thumbnailVtt;
-    if (!vttPath) {
+    if (!vttPath || !playbackSessionReady) {
       const clearTimer = window.setTimeout(() => setStoryboardCues([]), 0);
       return () => window.clearTimeout(clearTimer);
     }
 
     const controller = new AbortController();
     const vttUrl = resolveMediaUrl(vttPath);
-    fetch(vttUrl, { signal: controller.signal })
+    fetch(vttUrl, {
+      signal: controller.signal,
+      credentials: "include",
+      headers: { Authorization: `Bearer ${authToken}` }
+    })
       .then((response) => response.ok ? response.text() : "")
       .then((contents) => setStoryboardCues(parseStoryboardVtt(contents, vttUrl)))
       .catch(() => setStoryboardCues([]));
 
     return () => controller.abort();
-  }, [movie]);
+  }, [movie, playbackSessionReady, authToken]);
 
   // 2. Setup Watch Party Socket Connection if active
   useEffect(() => {
     if (!watchPartyRoom) return;
 
-    const socket = io(API_URL);
+    const socket = io(API_URL, {
+      auth: { token: authToken },
+      withCredentials: true
+    });
     socketRef.current = socket;
 
     // Join room on connect
     socket.on("connect", () => {
-      socket.emit("party:join", {
-        roomCode: watchPartyRoom.code,
-        user: partyParticipant || user || { userId: "guest", name: "Viewer" }
-      });
+      socket.emit("party:join", { roomCode: watchPartyRoom.code });
     });
 
     socket.on("party:joined", (data) => {
@@ -447,15 +491,15 @@ export default function CinemaPlayer({
       setSyncStatus(message || "Unable to join watch party");
     });
 
-    socket.on("connect_error", () => {
-      setSyncStatus("Party server unavailable");
+    socket.on("connect_error", (error) => {
+      setSyncStatus(error.message === "AUTH_REQUIRED" ? "Sign in to join this watch party" : "Party server unavailable");
     });
 
     return () => {
       leaveVoiceChat();
       socket.disconnect();
     };
-  }, [watchPartyRoom, partyParticipant, user, createVoicePeer, leaveVoiceChat, removeVoicePeer]);
+  }, [watchPartyRoom, authToken, createVoicePeer, leaveVoiceChat, removeVoicePeer]);
 
   // 3. Auto-save progress to backend every 5 seconds for cross-device resume
   useEffect(() => {
@@ -787,8 +831,8 @@ export default function CinemaPlayer({
             className="cinema-video"
             playsInline
             preload="metadata"
-            poster={resolveMediaUrl(movie?.backdrop || movie?.poster) || undefined}
-            crossOrigin={isHlsStream ? "anonymous" : undefined}
+            poster={playbackSessionReady ? (resolveMediaUrl(movie?.backdrop || movie?.poster) || undefined) : undefined}
+            crossOrigin="use-credentials"
             onLoadStart={() => setIsLoading(true)}
             onWaiting={() => setIsLoading(true)}
             onCanPlay={handleVideoCanPlay}
