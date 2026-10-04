@@ -224,7 +224,7 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
 
         {canUpload && <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <form onSubmit={uploadMovie} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <label style={{ fontSize: 13, color: "#ddd" }}>Upload from your device <span style={{ color: "#aaa", fontWeight: 400 }}>(source up to {formatBytes(library.maxUploadBytes)})</span><input type="file" accept="video/mp4,video/x-matroska,video/quicktime,video/webm,video/x-m4v" onChange={(event) => setFile(event.target.files?.[0] || null)} style={{ display: "block", marginTop: 7, width: "100%" }} /></label>
+            <label style={{ fontSize: 13, color: "#ddd" }}>Upload from your device <span style={{ color: "#aaa", fontWeight: 400 }}>(MP4, MKV, MOV, M4V, or WebM · source up to {formatBytes(library.maxUploadBytes)})</span><input type="file" accept=".mp4,.mkv,.mov,.m4v,.webm,video/mp4,video/x-matroska,video/quicktime,video/webm,video/x-m4v" onChange={(event) => setFile(event.target.files?.[0] || null)} style={{ display: "block", marginTop: 7, width: "100%" }} /></label>
             {file && <span style={{ fontSize: 12, color: "#aaa" }}>{file.name} · {formatBytes(file.size)}</span>}
             <button type="submit" disabled={loading} className="btn-party" style={{ justifyContent: "center" }}><Upload size={16} /> Upload and encode</button>
           </form>

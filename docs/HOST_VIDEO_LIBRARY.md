@@ -57,6 +57,10 @@ The startup log confirms the effective settings:
 6. Add more titles while free shared storage remains. Select **Delete** only for
    titles you want to remove and reclaim storage from.
 
+Supported source containers are **MP4, MKV, MOV, M4V, and WebM**. The server
+probes the source and converts it to browser-compatible adaptive HLS, so MKV
+and MOV files do not need browser-native playback support.
+
 URL imports are server jobs, not browser uploads. Once submitted, the same URL
 is accepted only once: a repeated submission reconnects to the existing job and
 shows its progress instead of downloading it again. Reloading or closing the
