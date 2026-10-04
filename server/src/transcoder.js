@@ -37,7 +37,7 @@ function formatDuration(seconds) {
   const total = Math.max(0, Math.round(seconds));
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
-  return hours ? `${hours}h${minutes ? ` ${minutes}m` : ""}` : `${minutes}m`;
+  return hours ? `${hours}h${minutes ? ` ${minutes}m` : ""}` : (minutes ? `${minutes}m` : `${total}s`);
 }
 
 function formatVttTime(seconds) {
@@ -56,6 +56,16 @@ function titleFromFilename(filename) {
     .replace(/\b(2160p|1080p|720p|480p|x264|x265|hevc|bluray|web[- ]?dl|webrip|hdr|dv|proper|repack)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim() || "Untitled upload";
+}
+
+function metadataText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function metadataYear(tags = {}) {
+  const candidate = metadataText(tags.date || tags.year || tags.creation_time);
+  const match = candidate.match(/\b(19|20)\d{2}\b/);
+  return match ? Number(match[0]) : new Date().getFullYear();
 }
 
 function runFfmpeg(command) {
@@ -118,14 +128,35 @@ export class MediaTranscoder {
     await Promise.all([ensureDirectory(this.uploadRoot), ensureDirectory(this.hlsRoot)]);
     try {
       const saved = JSON.parse(await fsp.readFile(this.manifestPath, "utf8"));
+      let manifestChanged = false;
       for (const media of Array.isArray(saved) ? saved : []) {
         const jobId = String(media.id || "").replace(/^local_/, "");
         if (!/^[a-f0-9-]{36}$/i.test(jobId)) continue;
         try {
           await fsp.access(path.join(this.hlsRoot, jobId, "master.m3u8"));
+          const baseUrl = `${this.publicBasePath}/${jobId}`;
+          const posterPath = path.join(this.hlsRoot, jobId, "poster.jpg");
+          try {
+            await fsp.access(posterPath);
+          } catch {
+            const previewPath = path.join(this.hlsRoot, jobId, "preview.mp4");
+            try {
+              await fsp.access(previewPath);
+              if (await this.createPoster(previewPath, posterPath, Math.min(asNumber(media.duration) || 10, 10))) {
+                media.poster = `${baseUrl}/poster.jpg`;
+                media.backdrop = `${baseUrl}/poster.jpg`;
+                manifestChanged = true;
+              }
+            } catch {}
+          }
+          if (asNumber(media.duration) > 0 && (!media.durationFormatted || media.durationFormatted === "0m")) {
+            media.durationFormatted = formatDuration(media.duration);
+            manifestChanged = true;
+          }
           this.completedMedia.set(media.id, media);
         } catch {}
       }
+      if (manifestChanged) await this.saveManifest();
     } catch (error) {
       if (error.code !== "ENOENT") console.warn("Unable to load media library manifest:", error.message);
     }
@@ -277,6 +308,11 @@ export class MediaTranscoder {
     const height = asNumber(videoStream.height);
     const hasAudio = metadata.streams?.some((stream) => stream.codec_type === "audio") || false;
     const subtitleStreams = metadata.streams?.filter((stream) => stream.codec_type === "subtitle") || [];
+    const audioStream = metadata.streams?.find((stream) => stream.codec_type === "audio");
+    const tags = { ...(metadata.format?.tags || {}), ...(videoStream.tags || {}) };
+    const title = metadataText(tags.title) || titleFromFilename(job.originalName);
+    const description = metadataText(tags.description || tags.comment || tags.synopsis);
+    const creator = metadataText(tags.artist || tags.author || tags.director);
 
     await ensureDirectory(job.outputDirectory);
     await Promise.all(QUALITY_LADDER.map((_, index) => ensureDirectory(path.join(job.outputDirectory, `v${index}`))));
@@ -284,6 +320,9 @@ export class MediaTranscoder {
 
     this.updateJob(job, { status: "creating preview", progress: 10 });
     await this.createPreview(job.inputPath, path.join(job.outputDirectory, "preview.mp4"));
+
+    this.updateJob(job, { status: "creating poster thumbnail", progress: 15 });
+    const posterCreated = await this.createPoster(job.inputPath, path.join(job.outputDirectory, "poster.jpg"), duration);
 
     this.updateJob(job, { status: "creating HLS variants", progress: 20 });
     await this.createHls(job, { hasAudio });
@@ -298,11 +337,11 @@ export class MediaTranscoder {
     const baseUrl = `${this.publicBasePath}/${job.id}`;
     const media = {
       id: `local_${job.id}`,
-      title: titleFromFilename(job.originalName),
+      title,
       tagline: "Personal library · adaptive HLS",
-      synopsis: "Your uploaded video, packaged for adaptive playback across phones, browsers, and TVs.",
-      backdrop: `${baseUrl}/thumbnails.jpg`,
-      poster: `${baseUrl}/thumbnails.jpg`,
+      synopsis: description || "Your uploaded video, packaged for adaptive playback across phones, browsers, and TVs.",
+      backdrop: posterCreated ? `${baseUrl}/poster.jpg` : `${baseUrl}/thumbnails.jpg`,
+      poster: posterCreated ? `${baseUrl}/poster.jpg` : `${baseUrl}/thumbnails.jpg`,
       videoSource: `${baseUrl}/master.m3u8`,
       previewSource: `${baseUrl}/preview.mp4`,
       thumbnailVtt: thumbnailVtt ? `${baseUrl}/thumbnails.vtt` : null,
@@ -310,14 +349,14 @@ export class MediaTranscoder {
       subtitleTracks,
       duration,
       durationFormatted: formatDuration(duration),
-      year: new Date().getFullYear(),
+      year: metadataYear(tags),
       maturityRating: "Personal",
-      resolution: height ? `${height}p source` : "Adaptive HLS",
-      audio: hasAudio ? "Adaptive audio" : "No audio track",
+      resolution: width && height ? `${width}×${height} · ${height}p source` : "Adaptive HLS",
+      audio: hasAudio ? `${String(audioStream?.codec_name || "AAC").toUpperCase()} adaptive audio` : "No audio track",
       matchScore: 100,
       genres: ["Personal Library"],
       cast: [],
-      director: "Your library",
+      director: creator || "Your library",
       category: "My Library",
       mediaType: "movie",
       provider: "Personal library",
@@ -342,6 +381,23 @@ export class MediaTranscoder {
         .outputOptions(["-c:v libx264", "-c:a aac", "-movflags +faststart"])
         .output(outputPath)
     );
+  }
+
+  async createPoster(inputPath, outputPath, duration) {
+    const frameAt = duration > 2 ? Math.min(Math.max(1, duration * 0.1), duration - 0.25) : 0;
+    try {
+      await this.runWithQuotaGuard(
+        ffmpeg(inputPath)
+          .setStartTime(frameAt)
+          .outputOptions(["-frames:v 1", "-vf", "scale='min(1280,iw)':-2", "-q:v 3"])
+          .output(outputPath)
+      );
+      return true;
+    } catch (error) {
+      console.warn("Unable to create library poster thumbnail:", error.message);
+      await fsp.unlink(outputPath).catch(() => {});
+      return false;
+    }
   }
 
   async createHls(job, { hasAudio }) {

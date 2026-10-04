@@ -1,0 +1,33 @@
+[
+  {
+    "id": "local_1bc4b909-a278-4d76-af18-6bc35a622fd0",
+    "title": "Radha krishna final",
+    "tagline": "Personal library · adaptive HLS",
+    "synopsis": "Your uploaded video, packaged for adaptive playback across phones, browsers, and TVs.",
+    "backdrop": "/media/hls/1bc4b909-a278-4d76-af18-6bc35a622fd0/poster.jpg",
+    "poster": "/media/hls/1bc4b909-a278-4d76-af18-6bc35a622fd0/poster.jpg",
+    "videoSource": "/media/hls/1bc4b909-a278-4d76-af18-6bc35a622fd0/master.m3u8",
+    "previewSource": "/media/hls/1bc4b909-a278-4d76-af18-6bc35a622fd0/preview.mp4",
+    "thumbnailVtt": "/media/hls/1bc4b909-a278-4d76-af18-6bc35a622fd0/thumbnails.vtt",
+    "chaptersVtt": null,
+    "subtitleTracks": [],
+    "duration": 31.466667,
+    "durationFormatted": "31s",
+    "year": 2026,
+    "maturityRating": "Personal",
+    "resolution": "1080p source",
+    "audio": "Adaptive audio",
+    "matchScore": 100,
+    "genres": [
+      "Personal Library"
+    ],
+    "cast": [],
+    "director": "Your library",
+    "category": "My Library",
+    "mediaType": "movie",
+    "provider": "Personal library",
+    "availabilityLabel": "YOUR UPLOAD",
+    "playable": true,
+    "isFeatured": false
+  }
+]

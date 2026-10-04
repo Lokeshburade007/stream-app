@@ -75,6 +75,9 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
 ### 8. Live Production Deployment on Oracle Cloud VPS
 ![Live Production Deployment](docs/screenshots/07_remote_deployment.png)
 
+### 9. Host-Only 10 GB Personal Video Library Manager
+![Host Video Library Modal](docs/screenshots/09_host_library_modal.png)
+
 ---
 
 ## 🌐 Live Production Deployment

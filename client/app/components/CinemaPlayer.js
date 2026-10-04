@@ -73,7 +73,6 @@ export default function CinemaPlayer({
   const containerRef = useRef(null);
   const socketRef = useRef(null);
   const hlsRef = useRef(null);
-  const autoPlayRef = useRef(true);
   const usedFallbackRef = useRef(false);
   const localVoiceStreamRef = useRef(null);
   const voicePeersRef = useRef(new Map());
@@ -217,7 +216,6 @@ export default function CinemaPlayer({
   }, [voiceMuted]);
 
   useEffect(() => {
-    autoPlayRef.current = true;
     usedFallbackRef.current = false;
     const resetTimer = window.setTimeout(() => {
       setSourceOverride(null);
@@ -286,7 +284,10 @@ export default function CinemaPlayer({
       })));
     });
     hls.on(Hls.Events.ERROR, (_event, data) => {
-      if (data.fatal) setPlaybackError(`HLS playback error: ${data.type}`);
+      if (data.fatal) {
+        setIsLoading(false);
+        setPlaybackError(`HLS playback error: ${data.type}`);
+      }
     });
     hls.loadSource(videoSrc);
     hls.attachMedia(video);
@@ -486,9 +487,7 @@ export default function CinemaPlayer({
     if (!vid) return;
 
     if (vid.paused) {
-      vid.play().catch(() => {});
-      setIsPlaying(true);
-      emitPartyAction("play", vid.currentTime);
+      startPlayback();
     } else {
       vid.pause();
       setIsPlaying(false);
@@ -499,20 +498,20 @@ export default function CinemaPlayer({
   const startPlayback = () => {
     const video = videoRef.current;
     if (!video) return;
-    autoPlayRef.current = false;
     video.play()
       .then(() => {
         setIsPlaying(true);
         setPlaybackError("");
+        emitPartyAction("play", video.currentTime);
       })
       .catch(() => {
-        setPlaybackError("Playback was blocked. Press Play again to continue.");
+        setIsLoading(false);
+        setPlaybackError("Unable to start playback. Press Play again after interacting with the page.");
       });
   };
 
   const handleVideoCanPlay = () => {
     setIsLoading(false);
-    if (autoPlayRef.current) startPlayback();
   };
 
   const handleVideoError = () => {
@@ -770,7 +769,6 @@ export default function CinemaPlayer({
             ref={videoRef}
             className="cinema-video"
             playsInline
-            autoPlay
             preload="metadata"
             poster={movie?.backdrop || movie?.poster || undefined}
             crossOrigin={isHlsStream ? "anonymous" : undefined}
