@@ -10,6 +10,8 @@ import {
   VolumeX,
   Maximize,
   Minimize,
+  ZoomIn,
+  ZoomOut,
   ArrowLeft,
   Users,
   MessageSquare,
@@ -116,6 +118,23 @@ export default function CinemaPlayer({
   // available. Keep this separately from the catalogue metadata so uploaded
   // portrait clips get a tall viewport even when their listing has no size.
   const [videoOrientation, setVideoOrientation] = useState("unknown");
+  const [zoomScale, setZoomScale] = useState(1);
+  const [zoomPan, setZoomPan] = useState({ x: 0, y: 0 });
+  const [isPinching, setIsPinching] = useState(false);
+  const [zoomIndicator, setZoomIndicator] = useState({ text: "", visible: false });
+
+  const stageRef = useRef(null);
+  const zoomScaleRef = useRef(1);
+  const zoomPanRef = useRef({ x: 0, y: 0 });
+  const pinchStartDistanceRef = useRef(0);
+  const pinchStartScaleRef = useRef(1);
+  const pinchStartMidRef = useRef({ x: 0, y: 0 });
+  const touchStartPanRef = useRef({ x: 0, y: 0 });
+  const touchStartPointRef = useRef({ x: 0, y: 0 });
+  const touchStartTimeRef = useRef(0);
+  const didPinchOrPanRef = useRef(false);
+  const lastTapRef = useRef(0);
+  const zoomIndicatorTimerRef = useRef(null);
 
   const hideControlsTimer = useRef(null);
 
@@ -279,6 +298,11 @@ export default function CinemaPlayer({
       setCurrentTime(0);
       setDuration(0);
       setVideoOrientation("unknown");
+      zoomScaleRef.current = 1;
+      zoomPanRef.current = { x: 0, y: 0 };
+      setZoomScale(1);
+      setZoomPan({ x: 0, y: 0 });
+      setIsPinching(false);
     }, 0);
     return () => window.clearTimeout(resetTimer);
   }, [movie?.id]);
@@ -543,6 +567,227 @@ export default function CinemaPlayer({
     hideControlsTimer.current = setTimeout(() => {
       if (isPlaying) setShowControls(false);
     }, 3500);
+  };
+
+  const triggerZoomIndicator = useCallback((text) => {
+    setZoomIndicator({ text, visible: true });
+    if (zoomIndicatorTimerRef.current) {
+      clearTimeout(zoomIndicatorTimerRef.current);
+    }
+    zoomIndicatorTimerRef.current = setTimeout(() => {
+      setZoomIndicator((prev) => ({ ...prev, visible: false }));
+    }, 1400);
+  }, []);
+
+  const resetZoom = useCallback(() => {
+    zoomScaleRef.current = 1;
+    zoomPanRef.current = { x: 0, y: 0 };
+    setZoomScale(1);
+    setZoomPan({ x: 0, y: 0 });
+    setIsPinching(false);
+    triggerZoomIndicator("1.0x (Fit)");
+  }, [triggerZoomIndicator]);
+
+  const cycleZoomMode = useCallback(() => {
+    const current = zoomScaleRef.current;
+    let nextScale = 1.0;
+    let label = "1.0x (Fit)";
+    if (current < 1.1) {
+      nextScale = 1.5;
+      label = "1.5x (Fill / Zoom)";
+    } else if (current < 1.8) {
+      nextScale = 2.0;
+      label = "2.0x (Zoomed)";
+    } else {
+      nextScale = 1.0;
+      label = "1.0x (Fit)";
+    }
+    zoomScaleRef.current = nextScale;
+    zoomPanRef.current = { x: 0, y: 0 };
+    setZoomScale(nextScale);
+    setZoomPan({ x: 0, y: 0 });
+    setIsPinching(false);
+    triggerZoomIndicator(label);
+  }, [triggerZoomIndicator]);
+
+  // Touch gesture listeners (pinch-to-zoom, pan, double-tap)
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return undefined;
+
+    const onTouchStart = (e) => {
+      if (e.target.closest("button, input, select, a")) return;
+
+      if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        pinchStartDistanceRef.current = Math.hypot(dx, dy);
+        pinchStartScaleRef.current = zoomScaleRef.current;
+        touchStartPanRef.current = { ...zoomPanRef.current };
+        pinchStartMidRef.current = {
+          x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+          y: (e.touches[0].clientY + e.touches[1].clientY) / 2
+        };
+        didPinchOrPanRef.current = true;
+        setIsPinching(true);
+        if (e.cancelable) e.preventDefault();
+      } else if (e.touches.length === 1) {
+        touchStartPointRef.current = {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY
+        };
+        touchStartPanRef.current = { ...zoomPanRef.current };
+        touchStartTimeRef.current = Date.now();
+      }
+    };
+
+    const onTouchMove = (e) => {
+      if (e.touches.length === 2 && pinchStartDistanceRef.current > 0) {
+        if (e.cancelable) e.preventDefault();
+        didPinchOrPanRef.current = true;
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const currentDist = Math.hypot(dx, dy);
+        const factor = currentDist / pinchStartDistanceRef.current;
+        const newScale = Math.min(Math.max(pinchStartScaleRef.current * factor, 1.0), 3.5);
+
+        const currentMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const currentMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        const panX = touchStartPanRef.current.x + (currentMidX - pinchStartMidRef.current.x);
+        const panY = touchStartPanRef.current.y + (currentMidY - pinchStartMidRef.current.y);
+
+        const rect = stage.getBoundingClientRect();
+        const maxPanX = Math.max(0, ((newScale - 1) * rect.width) / 2);
+        const maxPanY = Math.max(0, ((newScale - 1) * rect.height) / 2);
+        const clampedX = Math.min(Math.max(panX, -maxPanX), maxPanX);
+        const clampedY = Math.min(Math.max(panY, -maxPanY), maxPanY);
+
+        zoomScaleRef.current = newScale;
+        zoomPanRef.current = { x: clampedX, y: clampedY };
+        setZoomScale(newScale);
+        setZoomPan({ x: clampedX, y: clampedY });
+        setIsPinching(true);
+        triggerZoomIndicator(`${newScale.toFixed(1)}x`);
+      } else if (e.touches.length === 1 && zoomScaleRef.current > 1.05) {
+        const dx = e.touches[0].clientX - touchStartPointRef.current.x;
+        const dy = e.touches[0].clientY - touchStartPointRef.current.y;
+        if (Math.hypot(dx, dy) > 8) {
+          if (e.cancelable) e.preventDefault();
+          didPinchOrPanRef.current = true;
+          const rect = stage.getBoundingClientRect();
+          const maxPanX = Math.max(0, ((zoomScaleRef.current - 1) * rect.width) / 2);
+          const maxPanY = Math.max(0, ((zoomScaleRef.current - 1) * rect.height) / 2);
+          const clampedX = Math.min(Math.max(touchStartPanRef.current.x + dx, -maxPanX), maxPanX);
+          const clampedY = Math.min(Math.max(touchStartPanRef.current.y + dy, -maxPanY), maxPanY);
+
+          zoomPanRef.current = { x: clampedX, y: clampedY };
+          setZoomPan({ x: clampedX, y: clampedY });
+          setIsPinching(true);
+        }
+      }
+    };
+
+    const onTouchEnd = (e) => {
+      if (e.touches.length === 0) {
+        setIsPinching(false);
+        pinchStartDistanceRef.current = 0;
+
+        if (zoomScaleRef.current < 1.08) {
+          zoomScaleRef.current = 1.0;
+          zoomPanRef.current = { x: 0, y: 0 };
+          setZoomScale(1.0);
+          setZoomPan({ x: 0, y: 0 });
+          triggerZoomIndicator("1.0x (Fit)");
+        } else {
+          const rect = stage.getBoundingClientRect();
+          const maxPanX = Math.max(0, ((zoomScaleRef.current - 1) * rect.width) / 2);
+          const maxPanY = Math.max(0, ((zoomScaleRef.current - 1) * rect.height) / 2);
+          const clampedX = Math.min(Math.max(zoomPanRef.current.x, -maxPanX), maxPanX);
+          const clampedY = Math.min(Math.max(zoomPanRef.current.y, -maxPanY), maxPanY);
+          zoomPanRef.current = { x: clampedX, y: clampedY };
+          setZoomPan({ x: clampedX, y: clampedY });
+        }
+
+        // Double-tap detection
+        if (!didPinchOrPanRef.current) {
+          const now = Date.now();
+          if (now - lastTapRef.current < 320) {
+            if (e.cancelable) e.preventDefault();
+            lastTapRef.current = 0;
+            if (zoomScaleRef.current > 1.15) {
+              zoomScaleRef.current = 1.0;
+              zoomPanRef.current = { x: 0, y: 0 };
+              setZoomScale(1.0);
+              setZoomPan({ x: 0, y: 0 });
+              triggerZoomIndicator("1.0x (Fit)");
+            } else {
+              zoomScaleRef.current = 1.6;
+              zoomPanRef.current = { x: 0, y: 0 };
+              setZoomScale(1.6);
+              setZoomPan({ x: 0, y: 0 });
+              triggerZoomIndicator("1.6x (Fill / Zoom)");
+            }
+          } else {
+            lastTapRef.current = now;
+          }
+        }
+
+        setTimeout(() => {
+          didPinchOrPanRef.current = false;
+        }, 120);
+      }
+    };
+
+    const onWheel = (e) => {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        const delta = -e.deltaY * 0.01;
+        const newScale = Math.min(Math.max(zoomScaleRef.current + delta, 1.0), 3.5);
+        zoomScaleRef.current = newScale;
+        setZoomScale(newScale);
+        if (newScale <= 1.05) {
+          zoomPanRef.current = { x: 0, y: 0 };
+          setZoomPan({ x: 0, y: 0 });
+        }
+        triggerZoomIndicator(`${newScale.toFixed(1)}x`);
+      }
+    };
+
+    stage.addEventListener("touchstart", onTouchStart, { passive: false });
+    stage.addEventListener("touchmove", onTouchMove, { passive: false });
+    stage.addEventListener("touchend", onTouchEnd, { passive: false });
+    stage.addEventListener("touchcancel", onTouchEnd, { passive: false });
+    stage.addEventListener("wheel", onWheel, { passive: false });
+
+    return () => {
+      stage.removeEventListener("touchstart", onTouchStart);
+      stage.removeEventListener("touchmove", onTouchMove);
+      stage.removeEventListener("touchend", onTouchEnd);
+      stage.removeEventListener("touchcancel", onTouchEnd);
+      stage.removeEventListener("wheel", onWheel);
+    };
+  }, [triggerZoomIndicator]);
+
+  // Stage click handler: toggles controls or playback, ignoring pinch/pan gestures
+  const handleStageClick = (e) => {
+    if (didPinchOrPanRef.current) {
+      didPinchOrPanRef.current = false;
+      return;
+    }
+    if (e.target.closest("button, input, select, a, .player-zoom-reset-btn")) {
+      return;
+    }
+
+    if (!showControls) {
+      setShowControls(true);
+      clearTimeout(hideControlsTimer.current);
+      hideControlsTimer.current = setTimeout(() => {
+        if (isPlaying) setShowControls(false);
+      }, 3500);
+      return;
+    }
+
+    togglePlay();
   };
 
   // 6. Playback handlers
@@ -835,51 +1080,84 @@ export default function CinemaPlayer({
         </div>
 
         {/* Video Element */}
-        <div className={`player-main video-${videoOrientation}`} onClick={togglePlay}>
-          <video
-            ref={videoRef}
-            className="cinema-video"
-            playsInline
-            preload="metadata"
-            poster={playbackSessionReady ? (resolveMediaUrl(movie?.backdrop || movie?.poster) || undefined) : undefined}
-            crossOrigin="use-credentials"
-            onLoadStart={() => setIsLoading(true)}
-            onWaiting={() => setIsLoading(true)}
-            onCanPlay={handleVideoCanPlay}
-            onPlaying={() => {
-              setIsLoading(false);
-              setIsPlaying(true);
+        <div
+          ref={stageRef}
+          className={`player-main video-${videoOrientation}`}
+          onClick={handleStageClick}
+        >
+          <div
+            className="cinema-video-wrapper"
+            style={{
+              transform: `translate3d(${zoomPan.x}px, ${zoomPan.y}px, 0) scale(${zoomScale})`,
+              transition: isPinching ? "none" : "transform 0.28s cubic-bezier(0.16, 1, 0.3, 1)"
             }}
-            onPause={() => setIsPlaying(false)}
-            onError={handleVideoError}
-            onTimeUpdate={() => {
-              if (videoRef.current) {
-                setCurrentTime(videoRef.current.currentTime);
-              }
-            }}
-            onLoadedMetadata={() => {
-              if (videoRef.current) {
-                setDuration(videoRef.current.duration);
-                const { videoWidth, videoHeight } = videoRef.current;
-                if (videoWidth && videoHeight) {
-                  setVideoOrientation(
-                    videoHeight > videoWidth ? "portrait" : videoWidth > videoHeight ? "landscape" : "square"
-                  );
-                }
-              }
-            }}
-            onEnded={() => setIsPlaying(false)}
           >
-            {externalSubtitleTracks.map((track, index) => (
-              <track
-                key={track.id || track.src}
-                kind="subtitles"
-                srcLang={track.language || "und"}
-                label={track.label || `Subtitle ${index + 1}`}
-                src={resolveMediaUrl(track.src)}
-              />
-            ))}
-          </video>
+            <video
+              ref={videoRef}
+              className="cinema-video"
+              playsInline
+              preload="metadata"
+              poster={playbackSessionReady ? (resolveMediaUrl(movie?.backdrop || movie?.poster) || undefined) : undefined}
+              crossOrigin="use-credentials"
+              onLoadStart={() => setIsLoading(true)}
+              onWaiting={() => setIsLoading(true)}
+              onCanPlay={handleVideoCanPlay}
+              onPlaying={() => {
+                setIsLoading(false);
+                setIsPlaying(true);
+              }}
+              onPause={() => setIsPlaying(false)}
+              onError={handleVideoError}
+              onTimeUpdate={() => {
+                if (videoRef.current) {
+                  setCurrentTime(videoRef.current.currentTime);
+                }
+              }}
+              onLoadedMetadata={() => {
+                if (videoRef.current) {
+                  setDuration(videoRef.current.duration);
+                  const { videoWidth, videoHeight } = videoRef.current;
+                  if (videoWidth && videoHeight) {
+                    setVideoOrientation(
+                      videoHeight > videoWidth ? "portrait" : videoWidth > videoHeight ? "landscape" : "square"
+                    );
+                  }
+                }
+              }}
+              onEnded={() => setIsPlaying(false)}
+            >
+              {externalSubtitleTracks.map((track, index) => (
+                <track
+                  key={track.id || track.src}
+                  kind="subtitles"
+                  srcLang={track.language || "und"}
+                  label={track.label || `Subtitle ${index + 1}`}
+                  src={resolveMediaUrl(track.src)}
+                />
+              ))}
+            </video>
+          </div>
+
+          {zoomIndicator.visible && (
+            <div className="player-zoom-badge" aria-live="polite">
+              {zoomIndicator.text}
+            </div>
+          )}
+
+          {zoomScale > 1.05 && (
+            <button
+              type="button"
+              className="player-zoom-reset-btn"
+              onClick={(event) => {
+                event.stopPropagation();
+                resetZoom();
+              }}
+              aria-label="Reset zoom to 100%"
+            >
+              <span>Reset Zoom</span>
+              <span className="player-zoom-reset-val">{zoomScale.toFixed(1)}x</span>
+            </button>
+          )}
 
           {isLoading && !playbackError && (
             <div className="player-loading-overlay" aria-live="polite">
@@ -1061,6 +1339,19 @@ export default function CinemaPlayer({
                   <span>{syncStatus}</span>
                 </div>
               )}
+
+              <button
+                id="player-zoom-toggle"
+                className={`icon-btn zoom-toggle-btn ${zoomScale > 1.05 ? "active-zoom" : ""}`}
+                onClick={cycleZoomMode}
+                title={`Zoom: ${zoomScale > 1.05 ? `${zoomScale.toFixed(1)}x (Click to cycle)` : "1.0x (Fit)"}`}
+                aria-label="Cycle zoom level"
+              >
+                {zoomScale > 1.15 ? <ZoomOut size={20} /> : <ZoomIn size={20} />}
+                {zoomScale > 1.05 && (
+                  <span className="zoom-btn-badge">{zoomScale.toFixed(1)}x</span>
+                )}
+              </button>
 
               <button
                 id="player-fullscreen-toggle"
