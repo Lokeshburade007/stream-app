@@ -4,6 +4,8 @@ A next-generation streaming and synchronized watch party platform built with **N
 
 Integrated with the **Internet Archive Open Movies API** for streaming free feature films and public domain classics with complete metadata.
 
+> 📖 **Developer & AI Prompt Blueprint**: Looking to extend this project to full enterprise production? See [DEVELOPMENT_PROMPT.md](DEVELOPMENT_PROMPT.md) for the complete 7-phase architecture blueprint with copy-paste AI prompts for HLS transcoding, WebRTC voice chat, Smart TV D-Pad navigation, TMDB auto-ingestion, and Oracle VPS Docker deployment.
+
 ---
 
 ## 🌟 Key Features
