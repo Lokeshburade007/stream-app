@@ -1,9 +1,10 @@
 "use client";
 
-import { X, Play, Users, Check, Sparkles, Tv, Smartphone, Laptop } from "lucide-react";
+import { X, Play, Users, Sparkles, ExternalLink } from "lucide-react";
 
 export default function InfoModal({ movie, isOpen, onClose, onPlay, onStartWatchParty }) {
   if (!isOpen || !movie) return null;
+  const canPlay = movie.playable !== false;
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -73,29 +74,43 @@ export default function InfoModal({ movie, isOpen, onClose, onPlay, onStartWatch
               {movie.title}
             </h2>
             <div style={{ display: "flex", gap: 12 }}>
-              <button
-                id="modal-info-play"
-                className="btn-primary"
-                onClick={() => {
-                  onClose();
-                  onPlay(movie);
-                }}
-                style={{ padding: "8px 20px", fontSize: "14px" }}
-              >
-                <Play size={16} fill="#000" /> Play
-              </button>
+              {canPlay ? (
+                <>
+                  <button
+                    id="modal-info-play"
+                    className="btn-primary"
+                    onClick={() => {
+                      onClose();
+                      onPlay(movie);
+                    }}
+                    style={{ padding: "8px 20px", fontSize: "14px" }}
+                  >
+                    <Play size={16} fill="#000" /> Play
+                  </button>
 
-              <button
-                id="modal-info-party"
-                className="btn-party"
-                onClick={() => {
-                  onClose();
-                  onStartWatchParty(movie);
-                }}
-                style={{ padding: "8px 20px", fontSize: "14px" }}
-              >
-                <Users size={16} /> Watch Party
-              </button>
+                  <button
+                    id="modal-info-party"
+                    className="btn-party"
+                    onClick={() => {
+                      onClose();
+                      onStartWatchParty(movie);
+                    }}
+                    style={{ padding: "8px 20px", fontSize: "14px" }}
+                  >
+                    <Users size={16} /> Watch Party
+                  </button>
+                </>
+              ) : movie.externalUrl ? (
+                <a
+                  className="btn-primary"
+                  href={movie.externalUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ padding: "8px 20px", fontSize: "14px", textDecoration: "none", width: "fit-content" }}
+                >
+                  <ExternalLink size={16} /> Official show page
+                </a>
+              ) : null}
             </div>
           </div>
         </div>
@@ -104,7 +119,7 @@ export default function InfoModal({ movie, isOpen, onClose, onPlay, onStartWatch
         <div style={{ padding: "24px 28px", display: "flex", flexDirection: "column", gap: 18 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: "14px" }}>
             <span style={{ color: "#46d369", fontWeight: 700 }}>{movie.matchScore || 98}% Match</span>
-            <span style={{ color: "#aaa" }}>{movie.year || 2026}</span>
+              <span style={{ color: "#aaa" }}>{movie.year || "—"}</span>
             <span className="card-badge">{movie.maturityRating || "TV-MA"}</span>
             <span style={{ color: "#aaa" }}>{movie.durationFormatted || "1h 54m"}</span>
             <span className="card-badge" style={{ borderColor: "#E50914", color: "#E50914" }}>
@@ -117,7 +132,7 @@ export default function InfoModal({ movie, isOpen, onClose, onPlay, onStartWatch
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: "13px", color: "#aaa", borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 14 }}>
             <div>
               <span style={{ color: "#666" }}>Cast: </span>
-              <span style={{ color: "#eee" }}>{movie.cast ? movie.cast.join(", ") : "N/A"}</span>
+              <span style={{ color: "#eee" }}>{movie.cast?.length ? movie.cast.join(", ") : movie.provider || "N/A"}</span>
             </div>
             <div>
               <span style={{ color: "#666" }}>Director: </span>
@@ -133,17 +148,19 @@ export default function InfoModal({ movie, isOpen, onClose, onPlay, onStartWatch
             </div>
           </div>
 
-          {/* Multi-Device Streaming Info Box */}
-          <div style={{ background: "rgba(229, 9, 20, 0.08)", border: "1px solid rgba(229,9,20,0.3)", borderRadius: "8px", padding: "14px", display: "flex", gap: "12px", alignItems: "flex-start" }}>
+          {/* Availability information */}
+          <div style={{ background: canPlay ? "rgba(229, 9, 20, 0.08)" : "rgba(124, 58, 237, 0.12)", border: `1px solid ${canPlay ? "rgba(229,9,20,0.3)" : "rgba(167,139,250,0.35)"}`, borderRadius: "8px", padding: "14px", display: "flex", gap: "12px", alignItems: "flex-start" }}>
             <div style={{ background: "#E50914", borderRadius: "50%", padding: "6px", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <Sparkles size={16} color="#fff" />
             </div>
             <div>
               <h4 style={{ fontSize: "13px", fontWeight: 700, color: "#fff", marginBottom: "4px" }}>
-                Multi-Device Synchronized Streaming
+                {canPlay ? "Free multi-device streaming" : "Live series information"}
               </h4>
               <p style={{ fontSize: "12px", color: "#bbb", lineHeight: 1.5 }}>
-                Stream on your <strong>Smart TV</strong>, <strong>Laptop</strong>, or <strong>Mobile Phone</strong>. Use the Watch Party Room code to lock playback in real-time with friends. Your progress auto-syncs across all your devices.
+                {canPlay
+                  ? "This title is resolved from Internet Archive when you press Play. Start a Watch Party to synchronize it with friends."
+                  : "TVMaze supplies current series metadata and the official show link. Streaming availability is controlled by the title’s rights holder."}
               </p>
             </div>
           </div>

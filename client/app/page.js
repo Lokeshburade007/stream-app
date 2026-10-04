@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Navbar from "./components/Navbar";
 import HeroBanner from "./components/HeroBanner";
 import MovieRow from "./components/MovieRow";
@@ -8,8 +8,9 @@ import CinemaPlayer from "./components/CinemaPlayer";
 import WatchPartyModal from "./components/WatchPartyModal";
 import AuthModal from "./components/AuthModal";
 import InfoModal from "./components/InfoModal";
-import { Users, Film, Radio, Shield, Server, Smartphone, Laptop, Tv } from "lucide-react";
+import { Users, Film, Radio, Shield, Server, RefreshCw } from "lucide-react";
 import { io } from "socket.io-client";
+import { API_URL, apiUrl } from "./lib/api";
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -19,6 +20,9 @@ export default function Home() {
   const [featured, setFeatured] = useState(null);
   const [continueWatching, setContinueWatching] = useState([]);
   const [activeRooms, setActiveRooms] = useState([]);
+  const [catalogUpdatedAt, setCatalogUpdatedAt] = useState(null);
+  const [isRefreshingCatalog, setIsRefreshingCatalog] = useState(false);
+  const hasJoinedRoomLink = useRef(false);
 
   // Modals & Player State
   const [activePlayingMovie, setActivePlayingMovie] = useState(null);
@@ -33,35 +37,45 @@ export default function Home() {
   useEffect(() => {
     const savedUser = localStorage.getItem("stream_user");
     const savedToken = localStorage.getItem("stream_auth_token");
+    let restoreTimer;
     if (savedUser && savedToken) {
       try {
-        setUser(JSON.parse(savedUser));
-        setAuthToken(savedToken);
+        const restoredUser = JSON.parse(savedUser);
+        restoreTimer = window.setTimeout(() => {
+          setUser(restoredUser);
+          setAuthToken(savedToken);
+        }, 0);
       } catch (e) {
         localStorage.removeItem("stream_user");
       }
     }
+    return () => window.clearTimeout(restoreTimer);
   }, []);
 
   // 2. Fetch Media Catalog & Active Rooms from Server
-  const fetchMedia = async () => {
+  const fetchMedia = async ({ forceRefresh = false } = {}) => {
+    if (forceRefresh) setIsRefreshingCatalog(true);
     try {
-      const res = await fetch("http://localhost:5001/api/media");
+      const res = await fetch(apiUrl(`/api/media${forceRefresh ? "?refresh=1" : ""}`));
+      if (!res.ok) throw new Error(`Catalogue request failed (${res.status})`);
       const data = await res.json();
       if (data?.all) {
         setCatalog(data.all);
         setFeatured(data.featured);
         setCategories(data.categories);
+        setCatalogUpdatedAt(data.updatedAt || new Date().toISOString());
       }
     } catch (err) {
-      console.warn("Using offline media catalog fallback:", err.message);
+      console.warn("Live media catalogue unavailable:", err.message);
+    } finally {
+      if (forceRefresh) setIsRefreshingCatalog(false);
     }
   };
 
   const fetchContinueWatching = async (userId) => {
     if (!userId) return;
     try {
-      const res = await fetch(`http://localhost:5001/api/user/continue-watching?userId=${userId}`);
+      const res = await fetch(apiUrl(`/api/user/continue-watching?userId=${encodeURIComponent(userId)}`));
       const data = await res.json();
       if (data?.continueWatching) {
         setContinueWatching(data.continueWatching);
@@ -71,7 +85,7 @@ export default function Home() {
 
   const fetchActiveRooms = async () => {
     try {
-      const res = await fetch("http://localhost:5001/api/rooms/active");
+      const res = await fetch(apiUrl("/api/rooms/active"));
       const data = await res.json();
       if (data?.rooms) {
         setActiveRooms(data.rooms);
@@ -80,37 +94,45 @@ export default function Home() {
   };
 
   useEffect(() => {
-    fetchMedia();
-    fetchActiveRooms();
-    const interval = setInterval(fetchActiveRooms, 10000);
-    return () => clearInterval(interval);
+    const initialRequest = window.setTimeout(() => {
+      fetchMedia();
+      fetchActiveRooms();
+    }, 0);
+    const roomsInterval = setInterval(fetchActiveRooms, 10000);
+    const catalogueInterval = setInterval(fetchMedia, 10 * 60 * 1000);
+    return () => {
+      window.clearTimeout(initialRequest);
+      clearInterval(roomsInterval);
+      clearInterval(catalogueInterval);
+    };
   }, []);
 
   useEffect(() => {
     if (user) {
-      fetchContinueWatching(user.id || user.userId);
+      const progressRequest = window.setTimeout(() => {
+        fetchContinueWatching(user.id || user.userId);
+      }, 0);
+      return () => window.clearTimeout(progressRequest);
     }
   }, [user]);
 
-  // 3. Handle Direct Room Link (e.g. ?room=XYZ)
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const roomParam = params.get("room");
-      if (roomParam) {
-        handleJoinRoom(roomParam);
-      }
-    }
-  }, [catalog]);
-
   // 4. Playback Actions
   const handlePlayMovie = (movie) => {
+    if (!movie?.playable) {
+      setInfoModalMovie(movie);
+      return;
+    }
     setWatchPartyRoom(null); // Solo playback
     setActivePlayingMovie(movie);
   };
 
-  const handleStartWatchParty = (movie) => {
-    const socket = io("http://localhost:5001");
+  const handleStartWatchParty = (movie, hostOnlyControl = false) => {
+    if (!movie?.playable) {
+      setInfoModalMovie(movie);
+      return;
+    }
+
+    const socket = io(API_URL);
     const currentUser = user || {
       userId: `host_${Math.random().toString(36).substring(2, 7)}`,
       name: "Host User",
@@ -120,7 +142,7 @@ export default function Home() {
     socket.emit("party:create", {
       mediaId: movie.id,
       user: currentUser,
-      hostOnlyControl: false
+      hostOnlyControl
     });
 
     socket.on("party:created", (room) => {
@@ -129,10 +151,15 @@ export default function Home() {
       setIsPartyModalOpen(false);
       socket.disconnect();
     });
+
+    socket.on("party:error", ({ message }) => {
+      alert(message || "Unable to start a watch party.");
+      socket.disconnect();
+    });
   };
 
-  const handleJoinRoom = (roomCode) => {
-    const socket = io("http://localhost:5001");
+  const handleJoinRoom = useCallback((roomCode) => {
+    const socket = io(API_URL);
     const currentUser = user || {
       userId: `guest_${Math.random().toString(36).substring(2, 7)}`,
       name: `Friend ${Math.floor(Math.random() * 90 + 10)}`,
@@ -144,8 +171,19 @@ export default function Home() {
       user: currentUser
     });
 
-    socket.on("party:joined", (room) => {
-      const targetMovie = catalog.find((m) => m.id === room.mediaId) || catalog[0];
+    socket.on("party:joined", async (room) => {
+      let targetMovie = catalog.find((m) => m.id === room.mediaId);
+      if (!targetMovie) {
+        try {
+          const response = await fetch(apiUrl(`/api/media/${encodeURIComponent(room.mediaId)}`));
+          if (response.ok) targetMovie = await response.json();
+        } catch {}
+      }
+      if (!targetMovie) {
+        alert("This title is no longer available to stream.");
+        socket.disconnect();
+        return;
+      }
       setWatchPartyRoom(room);
       setActivePlayingMovie(targetMovie);
       setIsPartyModalOpen(false);
@@ -156,7 +194,16 @@ export default function Home() {
       alert(message);
       socket.disconnect();
     });
-  };
+  }, [catalog, user]);
+
+  // 3. Handle Direct Room Link (e.g. ?room=XYZ) once the catalogue is ready.
+  useEffect(() => {
+    const roomParam = new URLSearchParams(window.location.search).get("room");
+    if (!roomParam || !catalog.length || hasJoinedRoomLink.current) return;
+    hasJoinedRoomLink.current = true;
+    const joinTimer = window.setTimeout(() => handleJoinRoom(roomParam), 0);
+    return () => window.clearTimeout(joinTimer);
+  }, [catalog, handleJoinRoom]);
 
   const handleLogout = () => {
     localStorage.removeItem("stream_user");
@@ -172,14 +219,15 @@ export default function Home() {
   // Dynamic Free Movies Search via Archive.org API
   useEffect(() => {
     if (!searchQuery.trim() || searchQuery.length < 2) {
-      setOnlineSearchResults([]);
-      return;
+      const clearTimer = window.setTimeout(() => setOnlineSearchResults([]), 0);
+      return () => window.clearTimeout(clearTimer);
     }
 
     const timer = setTimeout(async () => {
       setIsSearchingOnline(true);
       try {
-        const res = await fetch(`http://localhost:5001/api/movies/search?q=${encodeURIComponent(searchQuery)}`);
+        const res = await fetch(apiUrl(`/api/movies/search?q=${encodeURIComponent(searchQuery)}`));
+        if (!res.ok) throw new Error("Search is temporarily unavailable");
         const data = await res.json();
         if (data?.results) setOnlineSearchResults(data.results);
       } catch (err) {
@@ -201,6 +249,10 @@ export default function Home() {
           m.synopsis.toLowerCase().includes(searchQuery.toLowerCase())
       )
     : null;
+
+  const searchResults = Array.from(
+    new Map([...(filteredCatalog || []), ...onlineSearchResults].map((movie) => [movie.id, movie])).values()
+  );
 
   return (
     <main style={{ minHeight: "100vh", background: "var(--bg-main)", position: "relative" }}>
@@ -232,7 +284,7 @@ export default function Home() {
         {searchQuery.trim() && (
           <div className="row-container">
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <h2 className="row-title">Search Results for "{searchQuery}"</h2>
+              <h2 className="row-title">{`Search Results for “${searchQuery}”`}</h2>
               {isSearchingOnline && (
                 <span style={{ fontSize: 12, color: "#ffb703" }}>Searching Free Movies API...</span>
               )}
@@ -240,8 +292,8 @@ export default function Home() {
 
             {/* Combined Results Grid */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
-              {[...(filteredCatalog || []), ...onlineSearchResults].map((movie) => {
-                const isOnline = movie.id?.startsWith("archive_");
+              {searchResults.map((movie) => {
+                const isOnline = movie.playable;
                 return (
                   <div
                     key={movie.id}
@@ -261,8 +313,8 @@ export default function Home() {
                             FREE STREAM
                           </span>
                         ) : (
-                          <span style={{ background: "#E50914", color: "#fff", fontSize: 10, fontWeight: 800, padding: "2px 6px", borderRadius: 3 }}>
-                            PREMIUM
+                          <span style={{ background: "#7c3aed", color: "#fff", fontSize: 10, fontWeight: 800, padding: "2px 6px", borderRadius: 3 }}>
+                            SERIES INFO
                           </span>
                         )}
                         <span className="card-badge">{movie.year}</span>
@@ -280,7 +332,7 @@ export default function Home() {
 
             {(!filteredCatalog || filteredCatalog.length === 0) && onlineSearchResults.length === 0 && !isSearchingOnline && (
               <div style={{ textAlign: "center", padding: "40px", color: "#888" }}>
-                No movies found. Try searching for "horror", "space", "action", or "classic".
+                {"No movies found. Try searching for “horror”, “space”, “action”, or “classic”."}
               </div>
             )}
           </div>
@@ -339,7 +391,31 @@ export default function Home() {
           />
         )}
 
-        {/* Category Rows from Catalog */}
+        {/* Live source status */}
+        {!searchQuery.trim() && (
+          <div className="live-catalog-status">
+            <div>
+              <span className="live-dot" />
+              <strong>Live catalogue</strong> · Internet Archive movies and TVMaze series
+            </div>
+            <button
+              type="button"
+              className="live-refresh-button"
+              onClick={() => fetchMedia({ forceRefresh: true })}
+              disabled={isRefreshingCatalog}
+            >
+              <RefreshCw size={14} className={isRefreshingCatalog ? "spin" : ""} />
+              {isRefreshingCatalog ? "Refreshing…" : "Refresh"}
+            </button>
+            {catalogUpdatedAt && (
+              <span className="live-catalog-time">
+                Updated {new Date(catalogUpdatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Category Rows from live catalog */}
         {!searchQuery.trim() &&
           categories.map((cat) => (
             <MovieRow
@@ -360,9 +436,9 @@ export default function Home() {
             <Server size={22} color="#E50914" />
           </div>
           <div>
-            <h3 style={{ fontSize: "16px", fontWeight: 700, color: "#fff", marginBottom: "4px" }}>Oracle VPS Video Engine</h3>
+            <h3 style={{ fontSize: "16px", fontWeight: 700, color: "#fff", marginBottom: "4px" }}>Internet Archive Playback</h3>
             <p style={{ fontSize: "13px", color: "#888", lineHeight: 1.5 }}>
-              Transcodes and streams video with HTTP 206 Range partial streaming for zero latency on any device.
+              The player resolves the actual public Archive video file at playback time instead of relying on fixed demo URLs.
             </p>
           </div>
         </div>
@@ -423,11 +499,11 @@ export default function Home() {
       <WatchPartyModal
         isOpen={isPartyModalOpen}
         onClose={() => setIsPartyModalOpen(false)}
-        catalog={catalog}
+          catalog={catalog.filter((movie) => movie.playable)}
         onJoinRoom={handleJoinRoom}
         onCreateRoom={(movieId, hostOnly) => {
           const m = catalog.find((item) => item.id === movieId) || catalog[0];
-          handleStartWatchParty(m);
+          handleStartWatchParty(m, hostOnly);
         }}
       />
 

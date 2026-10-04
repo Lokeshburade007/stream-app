@@ -1,7 +1,6 @@
 // Real-time Watch Party Engine for synchronized multi-device streaming
-import { MEDIA_CATALOG } from "./catalog.js";
 
-export function setupWatchParty(io, tokenService) {
+export function setupWatchParty(io, tokenService, getMediaById) {
   // In-memory store of active watch party rooms
   const rooms = new Map();
 
@@ -37,8 +36,19 @@ export function setupWatchParty(io, tokenService) {
     });
 
     // 1. Create a new Watch Party Room
-    socket.on("party:create", ({ mediaId, user, hostOnlyControl = false }) => {
-      const media = MEDIA_CATALOG.find((m) => m.id === mediaId) || MEDIA_CATALOG[0];
+    socket.on("party:create", async ({ mediaId, user, hostOnlyControl = false }) => {
+      let media = null;
+      try {
+        media = await getMediaById?.(mediaId);
+      } catch (error) {
+        socket.emit("party:error", { message: "The live catalogue could not be reached. Please try again." });
+        return;
+      }
+
+      if (!media || !media.playable) {
+        socket.emit("party:error", { message: "Choose a currently playable Internet Archive movie for a watch party." });
+        return;
+      }
       const roomCode = generateRoomCode();
       const userData = user || currentUser || {
         userId: `guest_${socket.id.substring(0, 5)}`,

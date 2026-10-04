@@ -22,6 +22,7 @@ import {
   Radio
 } from "lucide-react";
 import { io } from "socket.io-client";
+import { API_URL, apiUrl } from "../lib/api";
 
 export default function CinemaPlayer({
   movie,
@@ -53,15 +54,17 @@ export default function CinemaPlayer({
   const hideControlsTimer = useRef(null);
 
   // 1. Initialize Video stream URL
-  const videoSrc = movie?.videoSource?.startsWith("http")
-    ? movie.videoSource
-    : `http://localhost:5001/api/media/stream/${movie?.id || "sample-teaser"}`;
+  const videoSrc = movie?.videoSource
+    ? movie.videoSource.startsWith("http")
+      ? movie.videoSource
+      : apiUrl(movie.videoSource)
+    : apiUrl(`/api/media/stream/${movie?.id || "sample-teaser"}`);
 
   // 2. Setup Watch Party Socket Connection if active
   useEffect(() => {
     if (!watchPartyRoom) return;
 
-    const socket = io("http://localhost:5001");
+    const socket = io(API_URL);
     socketRef.current = socket;
 
     // Join room on connect
@@ -138,7 +141,7 @@ export default function CinemaPlayer({
     const saveInterval = setInterval(() => {
       const vid = videoRef.current;
       if (vid && !vid.paused && user && movie) {
-        fetch("http://localhost:5001/api/user/progress", {
+        fetch(apiUrl("/api/user/progress"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

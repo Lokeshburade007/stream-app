@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { X, ShieldCheck, UserCheck, Lock, Mail, User, Sparkles, Smartphone, Tv, Laptop } from "lucide-react";
+import { apiUrl } from "../lib/api";
 
 export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
   const [isRegister, setIsRegister] = useState(false);
@@ -20,7 +21,7 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("http://localhost:5001/auth/quick-access", {
+      const res = await fetch(apiUrl("/auth/quick-access"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -52,7 +53,7 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
       if (isRegister) {
         if (!otpStep) {
           // Step 1: Register
-          const res = await fetch("http://localhost:5001/auth/register", {
+          const res = await fetch(apiUrl("/auth/register"), {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -65,7 +66,7 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
           setOtpStep(true);
         } else {
           // Step 2: Verify OTP
-          const res = await fetch("http://localhost:5001/auth/verify-email", {
+          const res = await fetch(apiUrl("/auth/verify-email"), {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -89,7 +90,7 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
         }
       } else {
         // Standard Login
-        const res = await fetch("http://localhost:5001/auth/login", {
+        const res = await fetch(apiUrl("/auth/login"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

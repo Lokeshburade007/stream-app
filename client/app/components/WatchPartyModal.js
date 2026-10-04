@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Users, Play, Plus, Radio, Shield, Key } from "lucide-react";
+import { apiUrl } from "../lib/api";
 
 export default function WatchPartyModal({
   isOpen,
@@ -15,11 +16,14 @@ export default function WatchPartyModal({
   const [joinCode, setJoinCode] = useState("");
   const [hostOnlyControl, setHostOnlyControl] = useState(false);
   const [activeRooms, setActiveRooms] = useState([]);
+  const activeSelectedMovieId = catalog.some((movie) => movie.id === selectedMovieId)
+    ? selectedMovieId
+    : catalog[0]?.id || "";
 
   useEffect(() => {
     if (isOpen) {
       // Fetch active rooms from server
-      fetch("http://localhost:5001/api/rooms/active")
+      fetch(apiUrl("/api/rooms/active"))
         .then((res) => res.json())
         .then((data) => {
           if (data?.rooms) setActiveRooms(data.rooms);
@@ -32,7 +36,7 @@ export default function WatchPartyModal({
 
   const handleCreate = (e) => {
     e.preventDefault();
-    onCreateRoom(selectedMovieId || catalog[0]?.id, hostOnlyControl);
+    onCreateRoom(activeSelectedMovieId, hostOnlyControl);
   };
 
   const handleJoin = (e) => {
@@ -108,7 +112,7 @@ export default function WatchPartyModal({
               <label className="form-label">Select Title to Watch</label>
               <select
                 id="select-movie-party"
-                value={selectedMovieId}
+                value={activeSelectedMovieId}
                 onChange={(e) => setSelectedMovieId(e.target.value)}
                 className="form-input"
                 style={{ background: "#222" }}
@@ -139,6 +143,7 @@ export default function WatchPartyModal({
               id="btn-create-party-submit"
               type="submit"
               className="btn-party"
+              disabled={!catalog.length}
               style={{ justifyContent: "center", width: "100%", padding: "14px" }}
             >
               <Users size={18} /> Launch Watch Party Room

@@ -1,6 +1,6 @@
 "use client";
 
-import { Play, Users, Plus, Check } from "lucide-react";
+import { Play, Users, Info } from "lucide-react";
 
 export default function MovieRow({
   title,
@@ -24,6 +24,7 @@ export default function MovieRow({
         {items.map((item) => {
           const movie = isContinueWatching ? item.media : item;
           if (!movie) return null;
+          const canPlay = movie.playable !== false;
 
           return (
             <div
@@ -33,9 +34,15 @@ export default function MovieRow({
               style={{
                 backgroundImage: `url(${movie.backdrop || movie.poster})`
               }}
-              onClick={() => onPlay(movie)}
+              onClick={() => (canPlay ? onPlay(movie) : onOpenInfo(movie))}
             >
               <div className="movie-card-overlay">
+                <div className="source-badge-row">
+                  <span className={`source-badge ${canPlay ? "streamable" : "series"}`}>
+                    {canPlay ? "FREE STREAM" : "SERIES INFO"}
+                  </span>
+                  {movie.provider && <span className="source-provider">{movie.provider}</span>}
+                </div>
                 <div className="card-title">{movie.title}</div>
                 <div className="card-meta-row">
                   <span className="card-match">{movie.matchScore || 95}% Match</span>
@@ -47,7 +54,8 @@ export default function MovieRow({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onPlay(movie);
+                      if (canPlay) onPlay(movie);
+                      else onOpenInfo(movie);
                     }}
                     style={{
                       width: 28,
@@ -60,31 +68,33 @@ export default function MovieRow({
                       justifyContent: "center",
                       cursor: "pointer"
                     }}
-                    title="Play"
+                    title={canPlay ? "Play" : "View series details"}
                   >
-                    <Play size={14} fill="#000" color="#000" />
+                    {canPlay ? <Play size={14} fill="#000" color="#000" /> : <Info size={14} color="#000" />}
                   </button>
 
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onStartWatchParty(movie);
-                    }}
-                    style={{
-                      width: 28,
-                      height: 28,
-                      borderRadius: "50%",
-                      background: "rgba(229, 9, 20, 0.9)",
-                      border: "none",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "pointer"
-                    }}
-                    title="Start Watch Party"
-                  >
-                    <Users size={14} color="#fff" />
-                  </button>
+                  {canPlay && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onStartWatchParty(movie);
+                      }}
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: "50%",
+                        background: "rgba(229, 9, 20, 0.9)",
+                        border: "none",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        cursor: "pointer"
+                      }}
+                      title="Start Watch Party"
+                    >
+                      <Users size={14} color="#fff" />
+                    </button>
+                  )}
                 </div>
               </div>
 

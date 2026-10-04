@@ -6,8 +6,12 @@ import { Server as SocketIOServer } from "socket.io";
 import mongoose from "mongoose";
 import securepoolApi from "securepool/api";
 const { createSecurePool } = securepoolApi;
-import { MEDIA_CATALOG } from "./catalog.js";
-import { CURATED_FREE_MOVIES, searchArchiveMovies } from "./freeMovieApi.js";
+import {
+  findLiveMedia,
+  getLiveCatalog,
+  resolveArchiveStreamUrl,
+  searchLiveMedia
+} from "./freeMovieApi.js";
 import { setupWatchParty } from "./watchParty.js";
 import { WatchProgress } from "./watchProgress.js";
 
@@ -81,84 +85,69 @@ async function startServer() {
     }
   });
 
-  const watchPartyManager = setupWatchParty(io, tokenService);
+  const watchPartyManager = setupWatchParty(io, tokenService, findLiveMedia);
 
   // -------------------------------------------------------------
   // Custom Media Streaming & Watch Party REST APIs
   // -------------------------------------------------------------
 
-  // 1. Get entire media catalog with categories and featured banner
-  app.get("/api/media", (req, res) => {
-    const allMedia = [...MEDIA_CATALOG, ...CURATED_FREE_MOVIES];
-    const featured = MEDIA_CATALOG.find((m) => m.isFeatured) || MEDIA_CATALOG[0];
-    const categories = [
-      {
-        id: "trending",
-        title: "Trending Now",
-        items: MEDIA_CATALOG.filter((m) => m.category === "Trending Now" || m.isFeatured)
-      },
-      {
-        id: "free_movies",
-        title: "Free Feature Films & Public Domain (Archive.org API)",
-        items: CURATED_FREE_MOVIES
-      },
-      {
-        id: "scifi",
-        title: "Sci-Fi & Cyberpunk Thrillers",
-        items: allMedia.filter((m) => m.genres.includes("Sci-Fi") || m.genres.includes("Cyberpunk"))
-      },
-      {
-        id: "action",
-        title: "Action & Adventure",
-        items: allMedia.filter((m) => m.genres.includes("Action") || m.genres.includes("Adventure"))
-      },
-      {
-        id: "animation",
-        title: "Animation & Comedy",
-        items: allMedia.filter((m) => m.genres.includes("Animation") || m.genres.includes("Comedy"))
-      }
-    ];
-
-    res.json({
-      featured,
-      categories,
-      all: allMedia,
-      totalTitles: allMedia.length
-    });
+  // 1. Get the live catalogue. Upstream data is cached for ten minutes to keep
+  // the key-free providers responsive and avoid unnecessary rate-limit pressure.
+  app.get("/api/media", async (req, res) => {
+    try {
+      const catalog = await getLiveCatalog({ forceRefresh: req.query.refresh === "1" });
+      res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+      res.json(catalog);
+    } catch (err) {
+      res.status(502).json({ error: "Live catalogue is temporarily unavailable", detail: err.message });
+    }
   });
 
-  // 2. Search free movies dynamically from Archive.org
+  // 2. Search both free-to-stream films and live series metadata.
   app.get("/api/movies/search", async (req, res) => {
     try {
       const q = (req.query.q || "").toString();
       if (!q.trim()) return res.json({ results: [] });
-      const results = await searchArchiveMovies(q);
+      const results = await searchLiveMedia(q);
       res.json({ results });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // 3. Get free movies list
-  app.get("/api/movies/free", (req, res) => {
-    res.json({ movies: CURATED_FREE_MOVIES });
+  // 3. Get the streamable part of the current catalogue.
+  app.get("/api/movies/free", async (req, res) => {
+    try {
+      const catalog = await getLiveCatalog();
+      res.json({ movies: catalog.all.filter((media) => media.playable) });
+    } catch (err) {
+      res.status(502).json({ error: "Free movies are temporarily unavailable", detail: err.message });
+    }
   });
 
   // 4. Get single media details
-  app.get("/api/media/:id", (req, res) => {
-    const allMedia = [...MEDIA_CATALOG, ...CURATED_FREE_MOVIES];
-    const media = allMedia.find((m) => m.id === req.params.id);
+  app.get("/api/media/:id", async (req, res) => {
+    const media = await findLiveMedia(req.params.id);
     if (!media) {
       return res.status(404).json({ error: "Title not found" });
     }
     res.json(media);
   });
 
-  // 3. Ultra-low latency HTTP 206 Partial Content Range Video Streaming
-  app.get("/api/media/stream/:id", (req, res) => {
-    const mediaId = req.params.id;
-    const media = MEDIA_CATALOG.find((m) => m.id === mediaId);
+  // 5. Resolve a concrete video file only when playback starts. Archive items do
+  // not have a universal filename, so guessing `${identifier}.mp4` is unreliable.
+  app.get("/api/archive/stream/:identifier", async (req, res) => {
+    try {
+      const streamUrl = await resolveArchiveStreamUrl(req.params.identifier);
+      if (!streamUrl) return res.status(404).json({ error: "No browser-playable video file was found" });
+      res.redirect(302, streamUrl);
+    } catch (err) {
+      res.status(502).json({ error: "Archive stream is temporarily unavailable", detail: err.message });
+    }
+  });
 
+  // 6. Legacy local sample stream retained for development previews.
+  app.get("/api/media/stream/:id", (req, res) => {
     // Look for local video file in media/ folder
     const localVideoPath = path.resolve(__dirname, "../media/sample_teaser.mp4");
 
@@ -207,7 +196,7 @@ async function startServer() {
     }
   });
 
-  // 4. Save cross-device watch progress (phone -> TV -> laptop)
+  // 7. Save cross-device watch progress (phone -> TV -> laptop)
   app.post("/api/user/progress", async (req, res) => {
     try {
       const { userId, mediaId, positionSeconds, durationSeconds, device } = req.body;
@@ -239,7 +228,7 @@ async function startServer() {
     }
   });
 
-  // 5. Get continue watching row for user
+  // 8. Get continue watching row for user
   app.get("/api/user/continue-watching", async (req, res) => {
     try {
       const userId = (req.query.userId || req.headers["x-user-id"] || "demo_user").toString();
@@ -247,13 +236,13 @@ async function startServer() {
         .sort({ updatedAt: -1 })
         .limit(10);
 
-      const enriched = progressList.map((item) => {
-        const media = MEDIA_CATALOG.find((m) => m.id === item.mediaId);
+      const enriched = (await Promise.all(progressList.map(async (item) => {
+        const media = await findLiveMedia(item.mediaId);
         return {
           ...item.toObject(),
           media: media || null
         };
-      }).filter((item) => item.media !== null);
+      }))).filter((item) => item.media !== null);
 
       res.json({ continueWatching: enriched });
     } catch (err) {
@@ -261,7 +250,7 @@ async function startServer() {
     }
   });
 
-  // 6. Get active watch parties
+  // 9. Get active watch parties
   app.get("/api/rooms/active", (req, res) => {
     res.json({
       rooms: watchPartyManager.getActiveRoomsSummary()
