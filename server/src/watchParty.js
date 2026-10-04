@@ -13,6 +13,14 @@ export function setupWatchParty(io, tokenService, getMediaById) {
     return code;
   }
 
+  function normalizeUser(user, socket, fallbackName) {
+    return {
+      userId: user?.userId || user?.id || `guest_${socket.id.substring(0, 5)}`,
+      name: user?.name || fallbackName,
+      email: user?.email || "guest@streamhub.io"
+    };
+  }
+
   // Namespace or root io connection
   io.on("connection", (socket) => {
     let currentRoomCode = null;
@@ -50,11 +58,7 @@ export function setupWatchParty(io, tokenService, getMediaById) {
         return;
       }
       const roomCode = generateRoomCode();
-      const userData = user || currentUser || {
-        userId: `guest_${socket.id.substring(0, 5)}`,
-        name: "Host User",
-        email: "host@streamhub.io"
-      };
+      const userData = normalizeUser(user || currentUser, socket, "Host User");
 
       const room = {
         code: roomCode,
@@ -68,6 +72,7 @@ export function setupWatchParty(io, tokenService, getMediaById) {
         currentTime: 0,
         isPlaying: false,
         lastUpdate: Date.now(),
+        expiresAt: Date.now() + 12 * 60 * 60 * 1000,
         participants: new Map(),
         messages: [
           {
@@ -79,21 +84,7 @@ export function setupWatchParty(io, tokenService, getMediaById) {
         ]
       };
 
-      // Add host as first participant
-      room.participants.set(socket.id, {
-        socketId: socket.id,
-        userId: userData.userId,
-        name: userData.name,
-        isHost: true,
-        isBuffering: false,
-        joinedAt: new Date().toISOString()
-      });
-
       rooms.set(roomCode, room);
-      currentRoomCode = roomCode;
-      currentUser = userData;
-
-      socket.join(roomCode);
 
       const serializedRoom = serializeRoom(room);
       socket.emit("party:created", serializedRoom);
@@ -105,16 +96,13 @@ export function setupWatchParty(io, tokenService, getMediaById) {
       const code = (roomCode || "").toUpperCase().trim();
       const room = rooms.get(code);
 
-      if (!room) {
+      if (!room || room.expiresAt <= Date.now()) {
+        rooms.delete(code);
         socket.emit("party:error", { message: `Watch Party room "${code}" does not exist or has expired.` });
         return;
       }
 
-      const userData = user || currentUser || {
-        userId: `guest_${socket.id.substring(0, 5)}`,
-        name: `Friend ${room.participants.size + 1}`,
-        email: "friend@streamhub.io"
-      };
+      const userData = normalizeUser(user || currentUser, socket, `Friend ${room.participants.size + 1}`);
 
       currentRoomCode = code;
       currentUser = userData;
@@ -279,8 +267,8 @@ export function setupWatchParty(io, tokenService, getMediaById) {
       room.participants.delete(socket.id);
 
       if (room.participants.size === 0) {
-        // Room empty: delete after grace period
-        rooms.delete(currentRoomCode);
+        // Keep the invite valid while a player reconnects or changes devices.
+        // Rooms remain intentionally short-lived and are pruned after 12 hours.
         io.emit("party:public_list_update", getActiveRoomsSummary());
       } else {
         // If host disconnected, promote first participant to host
@@ -320,7 +308,12 @@ export function setupWatchParty(io, tokenService, getMediaById) {
   }
 
   function getActiveRoomsSummary() {
-    return Array.from(rooms.values()).map((r) => ({
+    const now = Date.now();
+    for (const [code, room] of rooms) {
+      if (room.expiresAt <= now) rooms.delete(code);
+    }
+
+    return Array.from(rooms.values()).filter((r) => r.participants.size > 0).map((r) => ({
       code: r.code,
       mediaId: r.mediaId,
       mediaTitle: r.mediaTitle,
@@ -333,6 +326,15 @@ export function setupWatchParty(io, tokenService, getMediaById) {
 
   return {
     rooms,
-    getActiveRoomsSummary
+    getActiveRoomsSummary,
+    getRoom(roomCode) {
+      const code = (roomCode || "").toUpperCase().trim();
+      const room = rooms.get(code);
+      if (!room || room.expiresAt <= Date.now()) {
+        rooms.delete(code);
+        return null;
+      }
+      return serializeRoom(room);
+    }
   };
 }

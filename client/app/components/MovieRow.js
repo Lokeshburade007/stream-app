@@ -39,7 +39,7 @@ export default function MovieRow({
               <div className="movie-card-overlay">
                 <div className="source-badge-row">
                   <span className={`source-badge ${canPlay ? "streamable" : "series"}`}>
-                    {canPlay ? "FREE STREAM" : "SERIES INFO"}
+                    {canPlay ? "FREE STREAM" : movie.availabilityLabel || "SERIES INFO"}
                   </span>
                   {movie.provider && <span className="source-provider">{movie.provider}</span>}
                 </div>

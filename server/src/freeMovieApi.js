@@ -6,6 +6,8 @@
 
 const ARCHIVE_ORIGIN = "https://archive.org";
 const TVMAZE_ORIGIN = "https://api.tvmaze.com";
+const TMDB_ORIGIN = "https://api.themoviedb.org/3";
+const TMDB_IMAGE_ORIGIN = "https://image.tmdb.org/t/p";
 const CATALOG_CACHE_MS = 10 * 60 * 1000;
 const STREAM_URL_CACHE_MS = 6 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 9_000;
@@ -17,6 +19,14 @@ const catalogCache = {
 };
 
 const streamUrlCache = new Map();
+
+const INDIA_ARCHIVE_FILTER = "(subject:India OR subject:Hindi OR subject:Bollywood OR language:Hindi OR language:Telugu OR language:Tamil OR language:Malayalam)";
+const TMDB_GENRES = {
+  12: "Adventure", 16: "Animation", 18: "Drama", 27: "Horror", 28: "Action",
+  35: "Comedy", 53: "Thriller", 80: "Crime", 99: "Documentary", 10749: "Romance",
+  878: "Sci-Fi", 9648: "Mystery", 10751: "Family", 10759: "Action & Adventure",
+  10765: "Sci-Fi & Fantasy", 10766: "Soap", 10768: "War & Politics"
+};
 
 const FALLBACK_OPEN_MOVIES = [
   ["night_of_the_living_dead", "Night of the Living Dead", 1968, ["Horror", "Classic"]],
@@ -63,7 +73,7 @@ function safeArchiveIdentifier(identifier) {
   return /^[A-Za-z0-9._-]{1,120}$/.test(identifier || "") ? identifier : null;
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, extraHeaders = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -72,7 +82,8 @@ async function fetchJson(url) {
       signal: controller.signal,
       headers: {
         "User-Agent": "StreamHub/1.0 (live catalogue)",
-        Accept: "application/json"
+        Accept: "application/json",
+        ...extraHeaders
       }
     });
 
@@ -84,6 +95,27 @@ async function fetchJson(url) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function tmdbCredentials() {
+  return (process.env.TMDB_API_KEY || "").trim();
+}
+
+async function fetchTmdb(path, params = {}) {
+  const credentials = tmdbCredentials();
+  if (!credentials) return null;
+
+  const url = new URL(`${TMDB_ORIGIN}${path}`);
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, String(value)));
+
+  // TMDB supports both a v3 API key and a v4 read-access token. Keeping this
+  // server-side prevents the credential from ever being exposed to the browser.
+  if (credentials.startsWith("eyJ")) {
+    return fetchJson(url, { Authorization: `Bearer ${credentials}` });
+  }
+
+  url.searchParams.set("api_key", credentials);
+  return fetchJson(url);
 }
 
 function getDateInTimeZone(timeZone = process.env.CATALOG_TIME_ZONE || "Asia/Kolkata") {
@@ -143,7 +175,7 @@ function toArchiveMedia(doc) {
   };
 }
 
-function toTvMazeMedia(show, episode = null) {
+function toTvMazeMedia(show, episode = null, options = {}) {
   if (!show?.id) return null;
 
   const season = episode?.season ? `S${episode.season}` : null;
@@ -177,9 +209,11 @@ function toTvMazeMedia(show, episode = null) {
     genres,
     cast: [],
     director: network,
-    category: "Airing Today",
+    category: options.category || "Airing Today",
     mediaType: "series",
-    provider: "TVMaze",
+    provider: options.provider || "TVMaze",
+    availabilityLabel: options.availabilityLabel || "SERIES INFO",
+    availabilityNote: options.availabilityNote || "TVMaze supplies current series metadata and the official show link. Streaming availability is controlled by the title’s rights holder.",
     playable: false,
     isFeatured: false,
     episode: episode
@@ -194,12 +228,57 @@ function toTvMazeMedia(show, episode = null) {
   };
 }
 
-function archiveSearchUrl(query, limit, sort = "downloads desc") {
+function tmdbImage(path, size = "original") {
+  return path ? `${TMDB_IMAGE_ORIGIN}/${size}${path}` : "/backdrops/cosmic_odyssey.jpg";
+}
+
+function toTmdbMedia(item, mediaType, focus) {
+  if (!item?.id) return null;
+
+  const isMovie = mediaType === "movie";
+  const title = cleanText(isMovie ? item.title : item.name, "Untitled title");
+  const releaseDate = isMovie ? item.release_date : item.first_air_date;
+  const genreIds = Array.isArray(item.genre_ids) ? item.genre_ids : [];
+  const genres = genreIds.map((id) => TMDB_GENRES[id]).filter(Boolean).slice(0, 4);
+  const score = Number(item.vote_average) > 0 ? Math.round(Math.min(99, Number(item.vote_average) * 10)) : 85;
+
+  return {
+    id: `tmdb_${mediaType}_${item.id}`,
+    tmdbId: item.id,
+    title,
+    tagline: focus.tagline,
+    synopsis: cleanText(item.overview, `${title} is listed in the ${focus.provider} guide.`).slice(0, 420),
+    backdrop: tmdbImage(item.backdrop_path),
+    poster: tmdbImage(item.poster_path, "w780"),
+    externalUrl: `https://www.themoviedb.org/${isMovie ? "movie" : "tv"}/${item.id}/watch?locale=IN`,
+    duration: 0,
+    durationFormatted: isMovie ? "Movie" : "Series",
+    year: numericYear(releaseDate),
+    maturityRating: "Guide",
+    resolution: focus.resolution,
+    audio: "Metadata only",
+    matchScore: score,
+    genres: genres.length ? genres : [isMovie ? "Movie" : "Series"],
+    cast: [],
+    director: "TMDB",
+    category: focus.category,
+    mediaType,
+    provider: focus.provider,
+    availabilityLabel: focus.availabilityLabel,
+    availabilityNote: focus.availabilityNote,
+    attributionUrl: focus.attributionUrl || "https://www.themoviedb.org",
+    playable: false,
+    isFeatured: false
+  };
+}
+
+function archiveSearchUrl(query, limit, sort = "downloads desc", catalogueFilter = "") {
   const params = new URLSearchParams();
   const safeTerms = cleanText(query).replace(/[^\p{L}\p{N}\s'-]/gu, " ").trim();
   const searchTerms = safeTerms ? `(${safeTerms}) AND ` : "";
 
-  params.set("q", `${searchTerms}collection:feature_films AND format:"h.264"`);
+  const filters = ["collection:feature_films", "format:\"h.264\"", catalogueFilter].filter(Boolean).join(" AND ");
+  params.set("q", `${searchTerms}${filters}`);
   ["identifier", "title", "description", "year", "genre", "downloads", "runtime"].forEach((field) => params.append("fl[]", field));
   params.append("sort[]", sort);
   params.set("rows", String(limit));
@@ -218,13 +297,13 @@ export async function searchArchiveMovies(query, limit = 12) {
   }
 }
 
-async function discoverArchiveMovies() {
+async function discoverIndianArchiveMovies() {
   try {
-    const data = await fetchJson(archiveSearchUrl("", 18, "publicdate desc"));
+    const data = await fetchJson(archiveSearchUrl("", 18, "downloads desc", INDIA_ARCHIVE_FILTER));
     const movies = (data?.response?.docs || []).map(toArchiveMedia).filter(Boolean);
     return movies.length ? movies : FALLBACK_OPEN_MOVIES;
   } catch (error) {
-    console.warn("Internet Archive discovery unavailable:", error.message);
+    console.warn("Indian Internet Archive discovery unavailable:", error.message);
     return FALLBACK_OPEN_MOVIES;
   }
 }
@@ -232,11 +311,17 @@ async function discoverArchiveMovies() {
 async function discoverAiringSeries() {
   try {
     const date = getDateInTimeZone();
-    const data = await fetchJson(`${TVMAZE_ORIGIN}/schedule?country=US&date=${date}`);
+    const country = (process.env.TVMAZE_COUNTRY || "IN").toUpperCase();
+    const data = await fetchJson(`${TVMAZE_ORIGIN}/schedule?country=${encodeURIComponent(country)}&date=${date}`);
     const uniqueSeries = new Map();
 
     for (const episode of Array.isArray(data) ? data : []) {
-      const media = toTvMazeMedia(episode.show, episode);
+      const media = toTvMazeMedia(episode.show, episode, {
+        category: "Indian Series Airing Today",
+        provider: "TVMaze · India schedule",
+        availabilityLabel: "INDIAN SERIES",
+        availabilityNote: "TVMaze supplies India’s current broadcast schedule and an official show link. Streaming availability is controlled by the title’s rights holder."
+      });
       if (media && !uniqueSeries.has(media.id)) uniqueSeries.set(media.id, media);
       if (uniqueSeries.size >= 18) break;
     }
@@ -248,29 +333,115 @@ async function discoverAiringSeries() {
   }
 }
 
+async function discoverTmdbCategory(path, params, mediaType, focus) {
+  try {
+    const data = await fetchTmdb(path, params);
+    return (data?.results || []).map((item) => toTmdbMedia(item, mediaType, focus)).filter(Boolean).slice(0, 18);
+  } catch (error) {
+    console.warn(`TMDB ${focus.category} discovery unavailable:`, error.message);
+    return [];
+  }
+}
+
+async function discoverTmdbFocus() {
+  if (!tmdbCredentials()) {
+    return {
+      configured: false,
+      indianMovies: [],
+      indianSeries: [],
+      netflixMovies: [],
+      netflixSeries: []
+    };
+  }
+
+  const shared = {
+    include_adult: "false",
+    language: "en-US",
+    page: 1,
+    sort_by: "popularity.desc"
+  };
+  const indianMovieFocus = {
+    category: "Popular Indian Movies",
+    provider: "TMDB · India",
+    tagline: "Popular Indian movie guide",
+    resolution: "India guide",
+    availabilityLabel: "INDIAN GUIDE",
+    availabilityNote: "Movie information is provided by TMDB. Select the title to see its current India watch guide."
+  };
+  const indianSeriesFocus = {
+    category: "Popular Indian Series",
+    provider: "TMDB · India",
+    tagline: "Popular Indian series guide",
+    resolution: "India guide",
+    availabilityLabel: "INDIAN GUIDE",
+    availabilityNote: "Series information is provided by TMDB. Select the title to see its current India watch guide."
+  };
+  const netflixMovieFocus = {
+    category: "Netflix Movies in India",
+    provider: "Netflix availability · TMDB / JustWatch",
+    tagline: "Netflix availability in India",
+    resolution: "Netflix India guide",
+    availabilityLabel: "NETFLIX GUIDE",
+    availabilityNote: "Netflix availability is supplied by TMDB in partnership with JustWatch. Availability can change by region; select the title for the current watch guide.",
+    attributionUrl: "https://www.justwatch.com/in"
+  };
+  const netflixSeriesFocus = {
+    category: "Netflix Series in India",
+    provider: "Netflix availability · TMDB / JustWatch",
+    tagline: "Netflix availability in India",
+    resolution: "Netflix India guide",
+    availabilityLabel: "NETFLIX GUIDE",
+    availabilityNote: "Netflix availability is supplied by TMDB in partnership with JustWatch. Availability can change by region; select the title for the current watch guide.",
+    attributionUrl: "https://www.justwatch.com/in"
+  };
+  const netflixFilters = {
+    ...shared,
+    watch_region: "IN",
+    with_watch_monetization_types: "flatrate",
+    with_watch_providers: "8"
+  };
+
+  const [indianMovies, indianSeries, netflixMovies, netflixSeries] = await Promise.all([
+    discoverTmdbCategory("/discover/movie", { ...shared, region: "IN", with_origin_country: "IN" }, "movie", indianMovieFocus),
+    discoverTmdbCategory("/discover/tv", { ...shared, with_origin_country: "IN" }, "series", indianSeriesFocus),
+    discoverTmdbCategory("/discover/movie", netflixFilters, "movie", netflixMovieFocus),
+    discoverTmdbCategory("/discover/tv", netflixFilters, "series", netflixSeriesFocus)
+  ]);
+
+  return { configured: true, indianMovies, indianSeries, netflixMovies, netflixSeries };
+}
+
 async function buildLiveCatalog() {
-  const [movies, series] = await Promise.all([discoverArchiveMovies(), discoverAiringSeries()]);
+  const [movies, series, tmdb] = await Promise.all([
+    discoverIndianArchiveMovies(),
+    discoverAiringSeries(),
+    discoverTmdbFocus()
+  ]);
   const freeMovies = movies.length ? movies : FALLBACK_OPEN_MOVIES;
-  const all = [...freeMovies, ...series];
+  const all = [...freeMovies, ...series, ...tmdb.indianMovies, ...tmdb.indianSeries, ...tmdb.netflixMovies, ...tmdb.netflixSeries];
 
   return {
     featured: freeMovies[0] || series[0] || null,
     categories: [
       {
         id: "free-to-stream",
-        title: "Free Movies to Stream Now",
+        title: "Indian Movies to Stream Now",
         subtitle: "Live Internet Archive catalogue",
         items: freeMovies
       },
       {
-        id: "airing-today",
-        title: "Series Airing Today",
-        subtitle: "Live schedule data from TVMaze",
+        id: "indian-series-today",
+        title: "Indian Series Airing Today",
+        subtitle: "Live India schedule data from TVMaze",
         items: series
       },
+      { id: "popular-indian-movies", title: "Popular Indian Movies", subtitle: "Live TMDB India guide", items: tmdb.indianMovies },
+      { id: "popular-indian-series", title: "Popular Indian Series", subtitle: "Live TMDB India guide", items: tmdb.indianSeries },
+      { id: "netflix-movies-india", title: "Netflix Movies in India", subtitle: "Availability via TMDB / JustWatch", items: tmdb.netflixMovies },
+      { id: "netflix-series-india", title: "Netflix Series in India", subtitle: "Availability via TMDB / JustWatch", items: tmdb.netflixSeries },
       {
         id: "classics",
-        title: "Classic Free Cinema",
+        title: "Indian Archive Classics",
         subtitle: "Popular on Internet Archive",
         items: [...freeMovies].sort((a, b) => b.matchScore - a.matchScore).slice(0, 12)
       }
@@ -278,7 +449,8 @@ async function buildLiveCatalog() {
     all,
     totalTitles: all.length,
     updatedAt: new Date().toISOString(),
-    sources: ["Internet Archive", "TVMaze"]
+    sources: ["Internet Archive", "TVMaze", ...(tmdb.configured ? ["TMDB / JustWatch"] : [])],
+    tmdbConfigured: tmdb.configured
   };
 }
 
@@ -308,17 +480,34 @@ export async function searchLiveMedia(query, limit = 10) {
   const trimmedQuery = cleanText(query);
   if (!trimmedQuery) return [];
 
-  const [movies, tvResults] = await Promise.all([
+  const [movies, tvResults, tmdbResults] = await Promise.all([
     searchArchiveMovies(trimmedQuery, limit),
     fetchJson(`${TVMAZE_ORIGIN}/search/shows?q=${encodeURIComponent(trimmedQuery)}`)
       .then((results) => results.map((result) => toTvMazeMedia(result.show)).filter(Boolean).slice(0, limit))
       .catch((error) => {
         console.warn("TVMaze search unavailable:", error.message);
         return [];
+      }),
+    fetchTmdb("/search/multi", { query: trimmedQuery, include_adult: "false", language: "en-US", page: 1 })
+      .then((data) => (data?.results || [])
+        .filter((item) => item.media_type === "movie" || item.media_type === "tv")
+        .map((item) => toTmdbMedia(item, item.media_type === "movie" ? "movie" : "series", {
+          category: "Search results",
+          provider: "TMDB guide",
+          tagline: "Movie and series guide",
+          resolution: "Guide",
+          availabilityLabel: "TITLE GUIDE",
+          availabilityNote: "Movie and series information is provided by TMDB. Select the title to see its watch guide."
+        }))
+        .filter(Boolean)
+        .slice(0, limit))
+      .catch((error) => {
+        console.warn("TMDB search unavailable:", error.message);
+        return [];
       })
   ]);
 
-  return [...movies, ...tvResults];
+  return [...movies, ...tvResults, ...tmdbResults];
 }
 
 export async function findLiveMedia(id) {

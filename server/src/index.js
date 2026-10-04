@@ -1,7 +1,12 @@
+import "dotenv/config";
+import crypto from "crypto";
 import http from "http";
 import path from "path";
 import fs from "fs";
+import { Readable } from "stream";
 import { fileURLToPath } from "url";
+import express from "express";
+import multer from "multer";
 import { Server as SocketIOServer } from "socket.io";
 import mongoose from "mongoose";
 import securepoolApi from "securepool/api";
@@ -12,6 +17,7 @@ import {
   resolveArchiveStreamUrl,
   searchLiveMedia
 } from "./freeMovieApi.js";
+import { isSupportedVideo, MediaTranscoder } from "./transcoder.js";
 import { setupWatchParty } from "./watchParty.js";
 import { WatchProgress } from "./watchProgress.js";
 
@@ -20,6 +26,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = parseInt(process.env.PORT || "5001", 10);
 const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017/stream_hub";
+const MEDIA_ROOT = path.resolve(__dirname, "../media");
 
 // Read JWT RSA Keys
 function getJwtKeys() {
@@ -39,6 +46,8 @@ function getJwtKeys() {
 
 async function startServer() {
   const { privateKey, publicKey } = getJwtKeys();
+  const transcoder = new MediaTranscoder({ mediaRoot: MEDIA_ROOT });
+  await transcoder.initialize();
 
   // Connect Mongoose for custom stream models (WatchProgress)
   try {
@@ -74,6 +83,48 @@ async function startServer() {
 
   const { app, authMiddleware, tokenService } = securePool;
 
+  const upload = multer({
+    storage: multer.diskStorage({
+      destination: (_req, _file, callback) => callback(null, transcoder.getUploadDirectory()),
+      filename: (_req, file, callback) => {
+        const extension = path.extname(file.originalname || "").toLowerCase();
+        callback(null, `${crypto.randomUUID()}${extension}`);
+      }
+    }),
+    limits: { fileSize: 20 * 1024 * 1024 * 1024 },
+    fileFilter: (_req, file, callback) => {
+      if (!isSupportedVideo(file.originalname)) {
+        callback(new Error("Only MP4, MKV, MOV, M4V, and WebM video files are supported"));
+        return;
+      }
+      callback(null, true);
+    }
+  });
+
+  const resolveMedia = async (mediaId) => transcoder.getMediaById(mediaId) || findLiveMedia(mediaId);
+
+  async function getCombinedCatalog({ forceRefresh = false } = {}) {
+    const liveCatalog = await getLiveCatalog({ forceRefresh });
+    const personalLibrary = transcoder.getCompletedMedia();
+    const categories = [
+      ...(personalLibrary.length ? [{
+        id: "my-library",
+        title: "My Library",
+        subtitle: "Uploaded videos · adaptive HLS",
+        items: personalLibrary
+      }] : []),
+      ...liveCatalog.categories
+    ];
+
+    return {
+      ...liveCatalog,
+      featured: personalLibrary[0] || liveCatalog.featured,
+      categories,
+      all: [...personalLibrary, ...liveCatalog.all],
+      totalTitles: personalLibrary.length + liveCatalog.totalTitles
+    };
+  }
+
   // Create HTTP server
   const httpServer = http.createServer(app);
 
@@ -85,17 +136,60 @@ async function startServer() {
     }
   });
 
-  const watchPartyManager = setupWatchParty(io, tokenService, findLiveMedia);
+  const watchPartyManager = setupWatchParty(io, tokenService, resolveMedia);
 
   // -------------------------------------------------------------
   // Custom Media Streaming & Watch Party REST APIs
   // -------------------------------------------------------------
 
+  // HLS playlists change as an encode is published while immutable segments can
+  // be cached aggressively. CORS is required for hls.js on a separate frontend.
+  app.use("/media/hls", express.static(transcoder.hlsRoot, {
+    setHeaders: (res, filePath) => {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      if (filePath.endsWith(".m3u8")) {
+        res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+        res.setHeader("Cache-Control", "no-cache");
+      } else if (filePath.endsWith(".ts")) {
+        res.setHeader("Content-Type", "video/mp2t");
+        res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+      } else if (filePath.endsWith(".vtt")) {
+        res.setHeader("Content-Type", "text/vtt; charset=utf-8");
+        res.setHeader("Cache-Control", "public, max-age=3600");
+      } else {
+        res.setHeader("Cache-Control", "public, max-age=86400");
+      }
+    }
+  }));
+
+  // Uploading starts a background encode. Clients poll the status endpoint and
+  // completed files are immediately included in the My Library catalogue row.
+  app.post("/api/media/upload", (req, res) => {
+    upload.single("video")(req, res, (error) => {
+      if (error) return res.status(400).json({ error: error.message });
+      if (!req.file) return res.status(400).json({ error: "Attach a video file in the 'video' field" });
+
+      const job = transcoder.start(req.file);
+      res.status(202).json({
+        message: "Upload accepted. Adaptive HLS encoding has started in the background.",
+        job,
+        statusUrl: `/api/media/uploads/${job.id}`
+      });
+    });
+  });
+
+  app.get("/api/media/uploads/:jobId", (req, res) => {
+    const job = transcoder.getJob(req.params.jobId);
+    if (!job) return res.status(404).json({ error: "Upload job not found" });
+    res.json(job);
+  });
+
   // 1. Get the live catalogue. Upstream data is cached for ten minutes to keep
   // the key-free providers responsive and avoid unnecessary rate-limit pressure.
   app.get("/api/media", async (req, res) => {
     try {
-      const catalog = await getLiveCatalog({ forceRefresh: req.query.refresh === "1" });
+      const catalog = await getCombinedCatalog({ forceRefresh: req.query.refresh === "1" });
       res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
       res.json(catalog);
     } catch (err) {
@@ -118,7 +212,7 @@ async function startServer() {
   // 3. Get the streamable part of the current catalogue.
   app.get("/api/movies/free", async (req, res) => {
     try {
-      const catalog = await getLiveCatalog();
+      const catalog = await getCombinedCatalog();
       res.json({ movies: catalog.all.filter((media) => media.playable) });
     } catch (err) {
       res.status(502).json({ error: "Free movies are temporarily unavailable", detail: err.message });
@@ -127,22 +221,64 @@ async function startServer() {
 
   // 4. Get single media details
   app.get("/api/media/:id", async (req, res) => {
-    const media = await findLiveMedia(req.params.id);
+    const media = await resolveMedia(req.params.id);
     if (!media) {
       return res.status(404).json({ error: "Title not found" });
     }
     res.json(media);
   });
 
-  // 5. Resolve a concrete video file only when playback starts. Archive items do
-  // not have a universal filename, so guessing `${identifier}.mp4` is unreliable.
+  // 5. Relay a concrete Archive video file through this origin. A redirect makes
+  // the browser load archive.org directly; some files correctly opt out of
+  // cross-origin embedding (CORP), which prevents the <video> element from
+  // playing them. Forwarding byte ranges keeps seeking and playback working
+  // without weakening the upstream file's browser policy.
   app.get("/api/archive/stream/:identifier", async (req, res) => {
+    const abortController = new AbortController();
+    const abortUpstream = () => abortController.abort();
+    req.once("aborted", abortUpstream);
+    res.once("close", abortUpstream);
+
     try {
       const streamUrl = await resolveArchiveStreamUrl(req.params.identifier);
       if (!streamUrl) return res.status(404).json({ error: "No browser-playable video file was found" });
-      res.redirect(302, streamUrl);
+
+      const upstream = await fetch(streamUrl, {
+        headers: {
+          ...(req.headers.range ? { Range: req.headers.range } : {}),
+          "User-Agent": "StreamHub/1.0 (playback relay)"
+        },
+        signal: abortController.signal
+      });
+
+      if (!upstream.ok && upstream.status !== 206) {
+        return res.status(upstream.status).json({ error: "Archive video file is unavailable" });
+      }
+
+      const copyHeader = (name) => {
+        const value = upstream.headers.get(name);
+        if (value) res.setHeader(name, value);
+      };
+      ["content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag"].forEach(copyHeader);
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      res.setHeader("Cache-Control", "private, no-store");
+      res.status(upstream.status);
+
+      if (!upstream.body) return res.end();
+      const body = Readable.fromWeb(upstream.body);
+      await new Promise((resolve, reject) => {
+        body.once("error", reject);
+        res.once("finish", resolve);
+        res.once("close", resolve);
+        body.pipe(res);
+      });
     } catch (err) {
+      if (err.name === "AbortError") return;
       res.status(502).json({ error: "Archive stream is temporarily unavailable", detail: err.message });
+    } finally {
+      req.removeListener("aborted", abortUpstream);
+      res.removeListener("close", abortUpstream);
     }
   });
 
@@ -237,7 +373,7 @@ async function startServer() {
         .limit(10);
 
       const enriched = (await Promise.all(progressList.map(async (item) => {
-        const media = await findLiveMedia(item.mediaId);
+        const media = await resolveMedia(item.mediaId);
         return {
           ...item.toObject(),
           media: media || null
@@ -255,6 +391,15 @@ async function startServer() {
     res.json({
       rooms: watchPartyManager.getActiveRoomsSummary()
     });
+  });
+
+  // Room metadata is fetched before opening the player. The player itself is
+  // the only socket that joins, avoiding short-lived setup sockets appearing as
+  // phantom participants or deleting the room on disconnect.
+  app.get("/api/rooms/:roomCode", (req, res) => {
+    const room = watchPartyManager.getRoom(req.params.roomCode);
+    if (!room) return res.status(404).json({ error: "Watch Party room does not exist or has expired" });
+    res.json(room);
   });
 
   // 7. Instant Demo / Quick Access Login (generates valid RS256 token signed by SecurePool key)

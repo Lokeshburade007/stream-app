@@ -22,11 +22,13 @@ export default function Home() {
   const [activeRooms, setActiveRooms] = useState([]);
   const [catalogUpdatedAt, setCatalogUpdatedAt] = useState(null);
   const [isRefreshingCatalog, setIsRefreshingCatalog] = useState(false);
+  const [tmdbConfigured, setTmdbConfigured] = useState(false);
   const hasJoinedRoomLink = useRef(false);
 
   // Modals & Player State
   const [activePlayingMovie, setActivePlayingMovie] = useState(null);
   const [watchPartyRoom, setWatchPartyRoom] = useState(null);
+  const [partyParticipant, setPartyParticipant] = useState(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isPartyModalOpen, setIsPartyModalOpen] = useState(false);
   const [infoModalMovie, setInfoModalMovie] = useState(null);
@@ -64,6 +66,7 @@ export default function Home() {
         setFeatured(data.featured);
         setCategories(data.categories);
         setCatalogUpdatedAt(data.updatedAt || new Date().toISOString());
+        setTmdbConfigured(Boolean(data.tmdbConfigured));
       }
     } catch (err) {
       console.warn("Live media catalogue unavailable:", err.message);
@@ -123,8 +126,27 @@ export default function Home() {
       return;
     }
     setWatchPartyRoom(null); // Solo playback
+    setPartyParticipant(null);
     setActivePlayingMovie(movie);
   };
+
+  const getPartyParticipant = useCallback(() => {
+    if (user) return { ...user, userId: user.userId || user.id };
+
+    const storageKey = "stream_party_guest";
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+
+    const guest = {
+      userId: `guest_${crypto.randomUUID()}`,
+      name: `Guest ${Math.floor(Math.random() * 900 + 100)}`,
+      email: "guest@streamhub.io"
+    };
+    localStorage.setItem(storageKey, JSON.stringify(guest));
+    return guest;
+  }, [user]);
 
   const handleStartWatchParty = (movie, hostOnlyControl = false) => {
     if (!movie?.playable) {
@@ -133,11 +155,7 @@ export default function Home() {
     }
 
     const socket = io(API_URL);
-    const currentUser = user || {
-      userId: `host_${Math.random().toString(36).substring(2, 7)}`,
-      name: "Host User",
-      email: "host@streamhub.io"
-    };
+    const currentUser = getPartyParticipant();
 
     socket.emit("party:create", {
       mediaId: movie.id,
@@ -147,6 +165,7 @@ export default function Home() {
 
     socket.on("party:created", (room) => {
       setWatchPartyRoom(room);
+      setPartyParticipant(currentUser);
       setActivePlayingMovie(movie);
       setIsPartyModalOpen(false);
       socket.disconnect();
@@ -159,42 +178,30 @@ export default function Home() {
   };
 
   const handleJoinRoom = useCallback((roomCode) => {
-    const socket = io(API_URL);
-    const currentUser = user || {
-      userId: `guest_${Math.random().toString(36).substring(2, 7)}`,
-      name: `Friend ${Math.floor(Math.random() * 90 + 10)}`,
-      email: "friend@streamhub.io"
-    };
-
-    socket.emit("party:join", {
-      roomCode,
-      user: currentUser
-    });
-
-    socket.on("party:joined", async (room) => {
+    const openRoom = async () => {
+      try {
+        const roomResponse = await fetch(apiUrl(`/api/rooms/${encodeURIComponent(roomCode)}`));
+        if (!roomResponse.ok) throw new Error("This watch party does not exist or has expired.");
+        const room = await roomResponse.json();
       let targetMovie = catalog.find((m) => m.id === room.mediaId);
       if (!targetMovie) {
-        try {
           const response = await fetch(apiUrl(`/api/media/${encodeURIComponent(room.mediaId)}`));
           if (response.ok) targetMovie = await response.json();
-        } catch {}
       }
       if (!targetMovie) {
         alert("This title is no longer available to stream.");
-        socket.disconnect();
         return;
       }
       setWatchPartyRoom(room);
+        setPartyParticipant(getPartyParticipant());
       setActivePlayingMovie(targetMovie);
       setIsPartyModalOpen(false);
-      socket.disconnect();
-    });
-
-    socket.on("party:error", ({ message }) => {
-      alert(message);
-      socket.disconnect();
-    });
-  }, [catalog, user]);
+      } catch (error) {
+        alert(error.message || "Unable to join this watch party.");
+      }
+    };
+    openRoom();
+  }, [catalog, getPartyParticipant]);
 
   // 3. Handle Direct Room Link (e.g. ?room=XYZ) once the catalogue is ready.
   useEffect(() => {
@@ -314,7 +321,7 @@ export default function Home() {
                           </span>
                         ) : (
                           <span style={{ background: "#7c3aed", color: "#fff", fontSize: 10, fontWeight: 800, padding: "2px 6px", borderRadius: 3 }}>
-                            SERIES INFO
+                            {movie.availabilityLabel || "SERIES INFO"}
                           </span>
                         )}
                         <span className="card-badge">{movie.year}</span>
@@ -396,7 +403,7 @@ export default function Home() {
           <div className="live-catalog-status">
             <div>
               <span className="live-dot" />
-              <strong>Live catalogue</strong> · Internet Archive movies and TVMaze series
+              <strong>India-first live catalogue</strong> · Archive movies and TVMaze schedules
             </div>
             <button
               type="button"
@@ -411,6 +418,9 @@ export default function Home() {
               <span className="live-catalog-time">
                 Updated {new Date(catalogUpdatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
               </span>
+            )}
+            {!tmdbConfigured && (
+              <span className="live-catalog-time">Add <code>TMDB_API_KEY</code> on the server to enable Netflix-in-India guides.</span>
             )}
           </div>
         )}
@@ -486,10 +496,12 @@ export default function Home() {
         <CinemaPlayer
           movie={activePlayingMovie}
           user={user}
+          partyParticipant={partyParticipant}
           watchPartyRoom={watchPartyRoom}
           onClose={() => {
             setActivePlayingMovie(null);
             setWatchPartyRoom(null);
+            setPartyParticipant(null);
             if (user) fetchContinueWatching(user.id || user.userId);
           }}
         />

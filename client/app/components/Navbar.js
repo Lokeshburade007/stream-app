@@ -27,17 +27,18 @@ export default function Navbar({
   return (
     <nav className={`navbar ${scrolled ? "scrolled" : ""}`}>
       <div className="nav-left">
-        <a href="#" className="brand-logo" id="nav-brand-logo">
+        <a href="#" className="brand-logo" id="nav-brand-logo" suppressHydrationWarning>
           <Film size={28} />
           STREAM<span>HUB</span>
         </a>
 
         <ul className="nav-links">
-          <li><a href="#featured" className="nav-link active">Home</a></li>
+          <li><a href="#featured" className="nav-link active" suppressHydrationWarning>Home</a></li>
           <li>
             <a
               href="#party"
               className="nav-link"
+              suppressHydrationWarning
               onClick={(e) => {
                 e.preventDefault();
                 onOpenWatchPartyModal();
@@ -46,9 +47,9 @@ export default function Navbar({
               Watch Party
             </a>
           </li>
-          <li><a href="#trending" className="nav-link">Trending</a></li>
-          <li><a href="#scifi" className="nav-link">Sci-Fi</a></li>
-          <li><a href="#action" className="nav-link">Action</a></li>
+          <li><a href="#trending" className="nav-link" suppressHydrationWarning>Trending</a></li>
+          <li><a href="#scifi" className="nav-link" suppressHydrationWarning>Sci-Fi</a></li>
+          <li><a href="#action" className="nav-link" suppressHydrationWarning>Action</a></li>
         </ul>
       </div>
 

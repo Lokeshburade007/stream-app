@@ -22,11 +22,45 @@ import {
   Radio
 } from "lucide-react";
 import { io } from "socket.io-client";
-import { API_URL, apiUrl } from "../lib/api";
+import Hls from "hls.js";
+import { API_URL, APP_URL, apiUrl } from "../lib/api";
+
+function resolveMediaUrl(source) {
+  if (!source) return null;
+  return source.startsWith("http") ? source : apiUrl(source);
+}
+
+function parseStoryboardVtt(contents, vttUrl) {
+  const cuePattern = /(\d{2}:\d{2}:\d{2}\.\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2}\.\d{3})\s*\n([^\n]+)/g;
+  const toSeconds = (time) => {
+    const [hours, minutes, seconds] = time.split(":");
+    return Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds);
+  };
+  const cues = [];
+  let match;
+
+  while ((match = cuePattern.exec(contents)) !== null) {
+    const [imagePath, coordinates] = match[3].trim().split("#xywh=");
+    const [x, y, width, height] = (coordinates || "").split(",").map(Number);
+    if (!imagePath || ![x, y, width, height].every(Number.isFinite)) continue;
+    cues.push({
+      start: toSeconds(match[1]),
+      end: toSeconds(match[2]),
+      imageUrl: new URL(imagePath, vttUrl).toString(),
+      x,
+      y,
+      width,
+      height
+    });
+  }
+
+  return cues;
+}
 
 export default function CinemaPlayer({
   movie,
   user,
+  partyParticipant,
   watchPartyRoom = null,
   onClose,
   initialTime = 0
@@ -34,6 +68,9 @@ export default function CinemaPlayer({
   const videoRef = useRef(null);
   const containerRef = useRef(null);
   const socketRef = useRef(null);
+  const hlsRef = useRef(null);
+  const autoPlayRef = useRef(true);
+  const usedFallbackRef = useRef(false);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -50,15 +87,124 @@ export default function CinemaPlayer({
   const [copiedLink, setCopiedLink] = useState(false);
   const [floatingEmojis, setFloatingEmojis] = useState([]);
   const [syncStatus, setSyncStatus] = useState("In Sync");
+  const [qualityLevels, setQualityLevels] = useState([]);
+  const [selectedQuality, setSelectedQuality] = useState(-1);
+  const [audioTracks, setAudioTracks] = useState([]);
+  const [subtitleTracks, setSubtitleTracks] = useState([]);
+  const [selectedSubtitle, setSelectedSubtitle] = useState(-1);
+  const [storyboardCues, setStoryboardCues] = useState([]);
+  const [scrubPreview, setScrubPreview] = useState(null);
+  const [playbackError, setPlaybackError] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+  const [sourceOverride, setSourceOverride] = useState(null);
 
   const hideControlsTimer = useRef(null);
 
   // 1. Initialize Video stream URL
-  const videoSrc = movie?.videoSource
-    ? movie.videoSource.startsWith("http")
-      ? movie.videoSource
-      : apiUrl(movie.videoSource)
-    : apiUrl(`/api/media/stream/${movie?.id || "sample-teaser"}`);
+  const primaryVideoSrc = resolveMediaUrl(movie?.videoSource) || apiUrl(`/api/media/stream/${movie?.id || "sample-teaser"}`);
+  const fallbackVideoSrc = resolveMediaUrl(movie?.fallbackSource);
+  const videoSrc = sourceOverride || primaryVideoSrc;
+  const isHlsStream = /\.m3u8(?:[?#]|$)/i.test(videoSrc);
+  const externalSubtitleTracks = movie?.subtitleTracks || [];
+  const availableSubtitleTracks = subtitleTracks.length ? subtitleTracks : externalSubtitleTracks;
+
+  useEffect(() => {
+    autoPlayRef.current = true;
+    usedFallbackRef.current = false;
+    const resetTimer = window.setTimeout(() => {
+      setSourceOverride(null);
+      setPlaybackError("");
+      setIsLoading(true);
+      setCurrentTime(0);
+      setDuration(0);
+    }, 0);
+    return () => window.clearTimeout(resetTimer);
+  }, [movie?.id]);
+
+  // HLS playback is attached imperatively. Safari uses native HLS; other
+  // browsers use hls.js for adaptive switching and track selection.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return undefined;
+
+    setPlaybackError("");
+    setQualityLevels([]);
+    setSelectedQuality(-1);
+    setAudioTracks([]);
+    setSubtitleTracks([]);
+    setSelectedSubtitle(-1);
+
+    if (!isHlsStream) {
+      video.src = videoSrc;
+      video.load();
+      return undefined;
+    }
+
+    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = videoSrc;
+      video.load();
+      return undefined;
+    }
+
+    if (!Hls.isSupported()) {
+      const errorTimer = window.setTimeout(() => {
+        setPlaybackError("This browser does not support adaptive HLS playback.");
+      }, 0);
+      return () => window.clearTimeout(errorTimer);
+    }
+
+    const hls = new Hls({
+      enableWorker: true,
+      capLevelToPlayerSize: true,
+      startLevel: -1
+    });
+    hlsRef.current = hls;
+    hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
+      setQualityLevels(data.levels.map((level, index) => ({
+        index,
+        label: level.height ? `${level.height}p` : `${Math.round(level.bitrate / 1000)} Mbps`
+      })));
+    });
+    hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_event, data) => {
+      setAudioTracks(data.audioTracks.map((track, index) => ({
+        index,
+        label: track.name || track.lang || `Audio ${index + 1}`
+      })));
+    });
+    hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_event, data) => {
+      setSubtitleTracks(data.subtitleTracks.map((track, index) => ({
+        index,
+        label: track.name || track.lang || `Subtitle ${index + 1}`
+      })));
+    });
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (data.fatal) setPlaybackError(`HLS playback error: ${data.type}`);
+    });
+    hls.loadSource(videoSrc);
+    hls.attachMedia(video);
+
+    return () => {
+      hls.destroy();
+      if (hlsRef.current === hls) hlsRef.current = null;
+    };
+  }, [videoSrc, isHlsStream]);
+
+  useEffect(() => {
+    const vttPath = movie?.thumbnailVtt;
+    if (!vttPath) {
+      const clearTimer = window.setTimeout(() => setStoryboardCues([]), 0);
+      return () => window.clearTimeout(clearTimer);
+    }
+
+    const controller = new AbortController();
+    const vttUrl = resolveMediaUrl(vttPath);
+    fetch(vttUrl, { signal: controller.signal })
+      .then((response) => response.ok ? response.text() : "")
+      .then((contents) => setStoryboardCues(parseStoryboardVtt(contents, vttUrl)))
+      .catch(() => setStoryboardCues([]));
+
+    return () => controller.abort();
+  }, [movie]);
 
   // 2. Setup Watch Party Socket Connection if active
   useEffect(() => {
@@ -71,7 +217,7 @@ export default function CinemaPlayer({
     socket.on("connect", () => {
       socket.emit("party:join", {
         roomCode: watchPartyRoom.code,
-        user: user || { userId: "guest", name: "Viewer" }
+        user: partyParticipant || user || { userId: "guest", name: "Viewer" }
       });
     });
 
@@ -131,10 +277,18 @@ export default function CinemaPlayer({
       setRoomState((prev) => ({ ...prev, hostOnlyControl }));
     });
 
+    socket.on("party:error", ({ message }) => {
+      setSyncStatus(message || "Unable to join watch party");
+    });
+
+    socket.on("connect_error", () => {
+      setSyncStatus("Party server unavailable");
+    });
+
     return () => {
       socket.disconnect();
     };
-  }, [watchPartyRoom, user]);
+  }, [watchPartyRoom, partyParticipant, user]);
 
   // 3. Auto-save progress to backend every 5 seconds for cross-device resume
   useEffect(() => {
@@ -189,6 +343,37 @@ export default function CinemaPlayer({
     }
   };
 
+  const startPlayback = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    autoPlayRef.current = false;
+    video.play()
+      .then(() => {
+        setIsPlaying(true);
+        setPlaybackError("");
+      })
+      .catch(() => {
+        setPlaybackError("Playback was blocked. Press Play again to continue.");
+      });
+  };
+
+  const handleVideoCanPlay = () => {
+    setIsLoading(false);
+    if (autoPlayRef.current) startPlayback();
+  };
+
+  const handleVideoError = () => {
+    if (fallbackVideoSrc && videoSrc !== fallbackVideoSrc && !usedFallbackRef.current) {
+      usedFallbackRef.current = true;
+      setPlaybackError("The preferred stream was unavailable. Trying a compatible source…");
+      setSourceOverride(fallbackVideoSrc);
+      setIsLoading(true);
+      return;
+    }
+    setIsLoading(false);
+    setPlaybackError("This video could not be played. Please try another title or refresh the catalogue.");
+  };
+
   const handleSeek = (e) => {
     const vid = videoRef.current;
     if (!vid || !duration || !Number.isFinite(duration)) return;
@@ -202,6 +387,43 @@ export default function CinemaPlayer({
       setCurrentTime(targetTime);
       emitPartyAction("seek", targetTime);
     }
+  };
+
+  const handleScrubHover = (e) => {
+    if (!storyboardCues.length || !duration || !Number.isFinite(duration)) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const position = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const targetTime = position * duration;
+    const cue = storyboardCues.find((item) => targetTime >= item.start && targetTime <= item.end) || storyboardCues.at(-1);
+    if (cue) setScrubPreview({ ...cue, position, time: targetTime });
+  };
+
+  const selectQuality = (value) => {
+    const quality = Number(value);
+    setSelectedQuality(quality);
+    if (hlsRef.current) hlsRef.current.currentLevel = quality;
+  };
+
+  const selectAudioTrack = (value) => {
+    const trackIndex = Number(value);
+    if (hlsRef.current) hlsRef.current.audioTrack = trackIndex;
+  };
+
+  const selectSubtitleTrack = (value) => {
+    const trackIndex = Number(value);
+    setSelectedSubtitle(trackIndex);
+    if (hlsRef.current && subtitleTracks.length) {
+      hlsRef.current.subtitleTrack = trackIndex;
+      return;
+    }
+
+    const tracks = videoRef.current?.textTracks;
+    if (!tracks) return;
+    window.setTimeout(() => {
+      for (let index = 0; index < tracks.length; index += 1) {
+        tracks[index].mode = trackIndex === index ? "showing" : "disabled";
+      }
+    }, 0);
   };
 
   const skipSeconds = (seconds) => {
@@ -276,7 +498,7 @@ export default function CinemaPlayer({
   };
 
   const copyRoomLink = () => {
-    const url = `${window.location.origin}?room=${watchPartyRoom.code}`;
+    const url = `${APP_URL || window.location.origin}?room=${watchPartyRoom.code}`;
     navigator.clipboard.writeText(url).then(() => {
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2500);
@@ -393,9 +615,21 @@ export default function CinemaPlayer({
         <div className="player-main" onClick={togglePlay}>
           <video
             ref={videoRef}
-            src={videoSrc}
             className="cinema-video"
             playsInline
+            autoPlay
+            preload="metadata"
+            poster={movie?.backdrop || movie?.poster || undefined}
+            crossOrigin={isHlsStream ? "anonymous" : undefined}
+            onLoadStart={() => setIsLoading(true)}
+            onWaiting={() => setIsLoading(true)}
+            onCanPlay={handleVideoCanPlay}
+            onPlaying={() => {
+              setIsLoading(false);
+              setIsPlaying(true);
+            }}
+            onPause={() => setIsPlaying(false)}
+            onError={handleVideoError}
             onTimeUpdate={() => {
               if (videoRef.current) {
                 setCurrentTime(videoRef.current.currentTime);
@@ -407,7 +641,56 @@ export default function CinemaPlayer({
               }
             }}
             onEnded={() => setIsPlaying(false)}
-          />
+          >
+            {externalSubtitleTracks.map((track, index) => (
+              <track
+                key={track.id || track.src}
+                kind="subtitles"
+                srcLang={track.language || "und"}
+                label={track.label || `Subtitle ${index + 1}`}
+                src={resolveMediaUrl(track.src)}
+              />
+            ))}
+          </video>
+
+          {isLoading && !playbackError && (
+            <div className="player-loading-overlay" aria-live="polite">
+              <span className="player-loading-spinner" />
+              <span>Loading {movie?.title}…</span>
+            </div>
+          )}
+
+          {!isLoading && !isPlaying && !playbackError && (
+            <button
+              type="button"
+              className="player-center-play"
+              onClick={(event) => {
+                event.stopPropagation();
+                startPlayback();
+              }}
+              aria-label={`Play ${movie?.title || "video"}`}
+            >
+              <Play size={34} fill="#000" />
+              <span>Play</span>
+            </button>
+          )}
+
+          {playbackError && (
+            <div className="player-playback-error" role="alert">
+              <span>{playbackError}</span>
+              {!isLoading && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    startPlayback();
+                  }}
+                >
+                  Try again
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Floating Emoji Reactions */}
           {floatingEmojis.map((rx) => (
@@ -420,7 +703,30 @@ export default function CinemaPlayer({
         {/* Custom Video Controls Bar */}
         <div className={`player-controls ${!showControls ? "hidden-controls" : ""}`}>
           {/* Progress Scrub Bar */}
-          <div className="scrub-container" onClick={handleSeek} id="player-scrub-bar">
+          <div
+            className="scrub-container"
+            onClick={handleSeek}
+            onMouseMove={handleScrubHover}
+            onMouseLeave={() => setScrubPreview(null)}
+            id="player-scrub-bar"
+          >
+            {scrubPreview && (
+              <div
+                className="scrub-thumbnail-preview"
+                style={{ left: `${scrubPreview.position * 100}%` }}
+              >
+                <div
+                  className="scrub-thumbnail-image"
+                  style={{
+                    width: scrubPreview.width,
+                    height: scrubPreview.height,
+                    backgroundImage: `url(${scrubPreview.imageUrl})`,
+                    backgroundPosition: `-${scrubPreview.x}px -${scrubPreview.y}px`
+                  }}
+                />
+                <span>{formatTime(scrubPreview.time)}</span>
+              </div>
+            )}
             <div
               className="scrub-fill"
               style={{
@@ -484,6 +790,43 @@ export default function CinemaPlayer({
             </div>
 
             <div className="controls-right">
+              {isHlsStream && qualityLevels.length > 0 && (
+                <label className="stream-picker" title="Adaptive playback quality">
+                  <span>Quality</span>
+                  <select value={selectedQuality} onChange={(event) => selectQuality(event.target.value)}>
+                    <option value={-1}>Auto</option>
+                    {qualityLevels.map((level) => (
+                      <option key={level.index} value={level.index}>{level.label}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {audioTracks.length > 1 && (
+                <label className="stream-picker" title="Audio track">
+                  <span>Audio</span>
+                  <select onChange={(event) => selectAudioTrack(event.target.value)} defaultValue={0}>
+                    {audioTracks.map((track) => (
+                      <option key={track.index} value={track.index}>{track.label}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {availableSubtitleTracks.length > 0 && (
+                <label className="stream-picker" title="Subtitle track">
+                  <span>Subs</span>
+                  <select value={selectedSubtitle} onChange={(event) => selectSubtitleTrack(event.target.value)}>
+                    <option value={-1}>Off</option>
+                    {availableSubtitleTracks.map((track, index) => (
+                      <option key={track.id || track.index || index} value={track.index ?? index}>
+                        {track.label || `Subtitle ${index + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
               {watchPartyRoom && (
                 <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#46d369" }}>
                   <div className="sync-dot" />
@@ -535,7 +878,7 @@ export default function CinemaPlayer({
             </div>
 
             {/* Host Controls Lock Toggle */}
-            {watchPartyRoom.hostId === (user?.id || user?.userId) && (
+            {watchPartyRoom.hostId === (partyParticipant?.userId || partyParticipant?.id || user?.id || user?.userId) && (
               <button
                 onClick={() => {
                   const newMode = !roomState?.hostOnlyControl;

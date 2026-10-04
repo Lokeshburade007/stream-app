@@ -26,3 +26,7 @@ yarn-error.log*
 .DS_Store
 *.pem.bak
 Thumbs.db
+
+# Generated adaptive streaming packages and temporary uploads
+/server/media/uploads/
+/server/media/hls/

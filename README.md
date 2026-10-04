@@ -16,7 +16,9 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
   - Smart TV Remote D-Pad Navigation mode with enlarged focus indicators.
 - **Ultra-Low Latency Video Streaming Engine**:
   - Implements **HTTP 206 Partial Content** byte-range requests for instant scrubbing and zero-lag playback on Smart TV, Laptop, and Mobile browsers.
-  - Supports adaptive HLS streaming (`.m3u8` playlists) and high-bitrate MP4 streams.
+  - Uploads MP4, MKV, MOV, M4V, and WebM into adaptive HLS (`.m3u8`) ladders at 360p, 720p, and 1080p.
+  - Produces a preview clip, subtitle and chapter VTT files, plus a storyboard sprite for scrub-hover previews.
+  - Uses hls.js for adaptive browser playback, manual quality selection, and available audio/subtitle tracks.
 - **Free Movies Streaming API & Metadata**:
   - Integrated with the **Internet Archive Open Feature Films API**.
   - Verified full-length classics (*Night of the Living Dead*, *The Fast And The Furious (1955)*, *Voyage to the Planet of Prehistoric Women*, *House on Haunted Hill*, *The Stranger* by Orson Welles, *Jungle Book*).
@@ -62,6 +64,7 @@ stream-app/
 └── server/                     # Node.js + Express Backend
     ├── src/
     │   ├── index.js            # Express server, SecurePool & streaming APIs
+    │   ├── transcoder.js        # Upload worker, FFmpeg HLS pipeline & previews
     │   ├── catalog.js          # Curated media metadata
     │   ├── freeMovieApi.js     # Archive.org Free Movies API service
     │   ├── watchParty.js       # Real-time WebSocket room synchronizer
@@ -128,11 +131,26 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | `GET` | `/api/media` | Full media catalog with categories and featured banner |
 | `GET` | `/api/media/:id` | Individual title metadata |
 | `GET` | `/api/media/stream/:id` | HTTP 206 Partial Content byte-range video stream |
+| `POST` | `/api/media/upload` | Upload a `video` multipart field and start background HLS encoding |
+| `GET` | `/api/media/uploads/:jobId` | Retrieve HLS encoding job status and completed media metadata |
 | `GET` | `/api/movies/free` | Curated free streaming movies list |
 | `GET` | `/api/movies/search?q=...` | Live Internet Archive free movie search |
 | `POST` | `/api/user/progress` | Save playback timestamp (cross-device resume) |
 | `GET` | `/api/user/continue-watching` | Retrieve user's in-progress titles |
 | `GET` | `/api/rooms/active` | List of currently active live Watch Party rooms |
+
+### Uploading a personal video
+
+The backend transcodes uploads in the background. Once a job reports `completed`,
+the video appears under **My Library** and is available for adaptive playback and
+watch parties.
+
+```bash
+curl -F "video=@/absolute/path/to/video.mp4" http://localhost:5001/api/media/upload
+```
+
+Poll the returned `statusUrl` until `status` is `completed`. Generated uploads and
+HLS segments live under `server/media/` and are intentionally ignored by Git.
 
 ---
 

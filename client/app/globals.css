@@ -537,6 +537,89 @@ body {
   box-shadow: 0 0 8px var(--brand-red-glow);
 }
 
+.scrub-thumbnail-preview {
+  align-items: center;
+  bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 5;
+}
+
+.scrub-thumbnail-image {
+  background-repeat: no-repeat;
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.75);
+}
+
+.scrub-thumbnail-preview span {
+  background: rgba(0, 0, 0, 0.9);
+  border-radius: 3px;
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 5px;
+}
+
+.stream-picker {
+  align-items: center;
+  color: #cfcfcf;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 700;
+  gap: 5px;
+}
+
+.stream-picker select {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  max-width: 110px;
+  padding: 4px 5px;
+}
+
+.stream-picker option {
+  background: #181818;
+  color: #fff;
+}
+
+.player-playback-error {
+  align-items: center;
+  background: rgba(185, 28, 28, 0.92);
+  border: 1px solid rgba(254, 202, 202, 0.7);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  display: flex;
+  gap: 12px;
+  left: 50%;
+  max-width: min(480px, 80%);
+  padding: 10px 14px;
+  position: absolute;
+  text-align: center;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 8;
+}
+
+.player-playback-error button {
+  background: #fff;
+  border: 0;
+  border-radius: 4px;
+  color: #991b1b;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  padding: 5px 8px;
+}
+
 /* Video Player Modal / Page */
 .player-overlay {
   position: fixed;
@@ -599,6 +682,56 @@ body {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  background: #000;
+}
+
+.player-loading-overlay,
+.player-center-play {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  color: #fff;
+  display: flex;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  gap: 10px;
+  left: 50%;
+  padding: 12px 16px;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 8;
+}
+
+.player-center-play {
+  background: #fff;
+  border: none;
+  border-radius: 5px;
+  color: #000;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 12px 20px;
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+
+.player-center-play:hover {
+  background: rgba(255, 255, 255, 0.88);
+  transform: translate(-50%, -50%) scale(1.04);
+}
+
+.player-loading-spinner {
+  animation: player-spin 0.8s linear infinite;
+  border: 3px solid rgba(255, 255, 255, 0.25);
+  border-radius: 50%;
+  border-top-color: #fff;
+  height: 20px;
+  width: 20px;
+}
+
+@keyframes player-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* Player Custom Controls Bar */

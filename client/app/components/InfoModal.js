@@ -160,8 +160,18 @@ export default function InfoModal({ movie, isOpen, onClose, onPlay, onStartWatch
               <p style={{ fontSize: "12px", color: "#bbb", lineHeight: 1.5 }}>
                 {canPlay
                   ? "This title is resolved from Internet Archive when you press Play. Start a Watch Party to synchronize it with friends."
-                  : "TVMaze supplies current series metadata and the official show link. Streaming availability is controlled by the title’s rights holder."}
+                  : movie.availabilityNote || "Streaming availability is controlled by the title’s rights holder."}
               </p>
+              {!canPlay && movie.attributionUrl && (
+                <a
+                  href={movie.attributionUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "#93c5fd", display: "inline-block", fontSize: "12px", marginTop: "8px" }}
+                >
+                  Availability data source
+                </a>
+              )}
             </div>
           </div>
         </div>
