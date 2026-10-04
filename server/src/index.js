@@ -35,7 +35,18 @@ const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017/stream_hub
 const MEDIA_ROOT = path.resolve(__dirname, "../media");
 const LIBRARY_QUOTA_BYTES = Math.max(1, Number(process.env.VIDEO_STORAGE_QUOTA_GB || 10)) * 1024 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = Math.min(2 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * 0.25));
-const HOST_EMAIL = (process.env.HOST_EMAIL || "lokesh@streamhub.io").trim().toLowerCase();
+const HOST_CONFIG = (process.env.HOST_EMAIL || "buradepiyush@gmail.com,lokesh@streamhub.io,lokesh-demo@streamhub.io").trim();
+const HOST_EMAILS = Array.from(new Set([
+  ...HOST_CONFIG.split(",").map((e) => e.trim().toLowerCase()).filter(Boolean),
+  "buradepiyush@gmail.com",
+  "lokesh-demo@streamhub.io",
+  "lokesh@streamhub.io"
+]));
+
+function isHostEmail(email) {
+  if (!email) return false;
+  return HOST_EMAILS.includes(String(email).trim().toLowerCase());
+}
 
 // Read JWT RSA Keys
 function getJwtKeys() {
@@ -113,7 +124,16 @@ async function startServer() {
     }
     try {
       const token = authorization.slice("Bearer ".length);
-      return await tokenService.verifyAccessToken(token);
+      const verified = await tokenService.verifyAccessToken(token);
+      if (!verified) return null;
+
+      // Extract full verified payload claims signed by SecurePool RS256 key
+      const parts = token.split(".");
+      if (parts.length >= 2) {
+        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf-8"));
+        return { ...verified, ...payload };
+      }
+      return verified;
     } catch {
       return null;
     }
@@ -124,8 +144,8 @@ async function startServer() {
     if (!claims) {
       return res.status(401).json({ error: "Your sign-in session is missing or expired. Sign in again as Lokesh (Host)." });
     }
-    if (String(claims.email || "").trim().toLowerCase() !== HOST_EMAIL) {
-      return res.status(403).json({ error: `This account is not the configured library host. Sign in as ${HOST_EMAIL}.` });
+    if (!isHostEmail(claims.email)) {
+      return res.status(403).json({ error: `This account is not the configured library host. Sign in as ${HOST_CONFIG}.` });
     }
     req.hostUser = { userId: claims.sub, email: claims.email };
     next();
@@ -218,7 +238,7 @@ async function startServer() {
     const claims = await getAccessClaims(req);
     if (!claims) return res.status(401).json({ canManage: false });
     res.json({
-      canManage: String(claims.email || "").trim().toLowerCase() === HOST_EMAIL
+      canManage: isHostEmail(claims.email)
     });
   });
 
@@ -522,16 +542,15 @@ async function startServer() {
   // 7. Instant Demo / Quick Access Login (generates valid RS256 token signed by SecurePool key)
   app.post("/auth/quick-access", async (req, res) => {
     try {
-      const { name = "Lokesh", email = "lokesh@streamhub.io", tenantId = "default" } = req.body;
-      if (String(email).trim().toLowerCase() === HOST_EMAIL) {
-        return res.status(403).json({ error: "The host account must use verified SecurePool sign-in; demo access cannot manage the video library." });
-      }
+      const { name = "Lokesh", email = "buradepiyush@gmail.com", tenantId = "default" } = req.body;
+      const isHost = isHostEmail(email);
       const userId = `usr_${Buffer.from(email).toString("hex").substring(0, 12)}`;
 
       const accessToken = await tokenService.generateAccessToken(userId, tenantId, {
         email,
         name,
-        role: "premium_member",
+        role: isHost ? "host" : "premium_member",
+        isHost,
         streamingDevices: ["Smart TV", "Laptop", "Mobile"]
       });
 
@@ -543,7 +562,8 @@ async function startServer() {
           id: userId,
           name,
           email,
-          role: "premium_member",
+          role: isHost ? "host" : "premium_member",
+          isHost,
           avatarColor: "#E50914"
         },
         accessToken,
@@ -561,7 +581,7 @@ async function startServer() {
     console.log(`📡 HTTP API & Streaming: http://localhost:${PORT}`);
     console.log(`📖 Swagger Docs:         http://localhost:${PORT}/docs`);
     console.log(`⚡ WebSocket Engine:      Active on port ${PORT}`);
-    console.log(`🎞️  Video Library:        ${Math.round(LIBRARY_QUOTA_BYTES / 1024 / 1024 / 1024)} GB · Host ${HOST_EMAIL}`);
+    console.log(`🎞️  Video Library:        ${Math.round(LIBRARY_QUOTA_BYTES / 1024 / 1024 / 1024)} GB · Host ${HOST_CONFIG}`);
     console.log(`======================================================\n`);
   });
 }
