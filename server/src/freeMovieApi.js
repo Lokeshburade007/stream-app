@@ -37,6 +37,37 @@ const FALLBACK_OPEN_MOVIES = [
   toArchiveMedia({ identifier, title, year, genre: genres, downloads: 0 })
 );
 
+// Pinned official availability guides are useful even when TMDB is not
+// configured. They never expose or imply an unlicensed stream.
+const CURATED_NETFLIX_GUIDES = [
+  {
+    id: "netflix_lucifer_hindi",
+    title: "Lucifer",
+    tagline: "Hindi dubbed · Netflix India",
+    synopsis: "Bored with being the Lord of Hell, Lucifer Morningstar moves to Los Angeles, opens a nightclub, and partners with a homicide detective.",
+    backdrop: "/backdrops/cyber_amsterdam.jpg",
+    poster: "/posters/neon_rebellion.jpg",
+    externalUrl: "https://www.netflix.com/in/title/80057918",
+    duration: 0,
+    durationFormatted: "Series · Hindi audio",
+    year: 2016,
+    maturityRating: "U/A 16+",
+    resolution: "Netflix India",
+    audio: "Hindi, English",
+    matchScore: 96,
+    genres: ["Crime", "Fantasy", "Drama"],
+    cast: ["Tom Ellis", "Lauren German", "Kevin Alejandro"],
+    director: "Netflix official availability",
+    category: "Hindi Dubbed on Netflix",
+    mediaType: "series",
+    provider: "Netflix India",
+    availabilityLabel: "HINDI ON NETFLIX",
+    availabilityNote: "Available with Hindi audio and Hindi subtitles on Netflix India. A Netflix membership is required to watch full episodes.",
+    playable: false,
+    isFeatured: false
+  }
+];
+
 function cleanText(value, fallback = "") {
   if (Array.isArray(value)) value = value.join(", ");
   if (typeof value !== "string") return fallback;
@@ -418,7 +449,7 @@ async function buildLiveCatalog() {
     discoverTmdbFocus()
   ]);
   const freeMovies = movies.length ? movies : FALLBACK_OPEN_MOVIES;
-  const all = [...freeMovies, ...series, ...tmdb.indianMovies, ...tmdb.indianSeries, ...tmdb.netflixMovies, ...tmdb.netflixSeries];
+  const all = [...freeMovies, ...series, ...CURATED_NETFLIX_GUIDES, ...tmdb.indianMovies, ...tmdb.indianSeries, ...tmdb.netflixMovies, ...tmdb.netflixSeries];
 
   return {
     featured: freeMovies[0] || series[0] || null,
@@ -439,6 +470,7 @@ async function buildLiveCatalog() {
       { id: "popular-indian-series", title: "Popular Indian Series", subtitle: "Live TMDB India guide", items: tmdb.indianSeries },
       { id: "netflix-movies-india", title: "Netflix Movies in India", subtitle: "Availability via TMDB / JustWatch", items: tmdb.netflixMovies },
       { id: "netflix-series-india", title: "Netflix Series in India", subtitle: "Availability via TMDB / JustWatch", items: tmdb.netflixSeries },
+      { id: "hindi-dubbed-netflix", title: "Hindi Dubbed on Netflix", subtitle: "Official India availability", items: CURATED_NETFLIX_GUIDES },
       {
         id: "classics",
         title: "Indian Archive Classics",
@@ -507,7 +539,12 @@ export async function searchLiveMedia(query, limit = 10) {
       })
   ]);
 
-  return [...movies, ...tvResults, ...tmdbResults];
+  const curatedResults = CURATED_NETFLIX_GUIDES.filter((item) => {
+    const haystack = `${item.title} ${item.tagline} ${item.synopsis}`.toLowerCase();
+    return haystack.includes(trimmedQuery.toLowerCase());
+  });
+
+  return [...curatedResults, ...movies, ...tvResults, ...tmdbResults];
 }
 
 export async function findLiveMedia(id) {

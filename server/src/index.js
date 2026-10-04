@@ -58,6 +58,10 @@ async function startServer() {
   }
 
   // Initialize SecurePool Auth Framework
+  const smtpConfigured = ["SMTP_HOST", "SMTP_USER", "SMTP_PASS"].every((key) => Boolean(process.env[key]));
+  if (!smtpConfigured) {
+    console.warn("OTP email is disabled: configure SMTP_HOST, SMTP_USER, and SMTP_PASS in server/.env");
+  }
   const securePool = await createSecurePool({
     database: {
       type: "mongo",
@@ -68,6 +72,16 @@ async function startServer() {
       publicKey,
       accessTokenExpirySeconds: 86400, // 24 hours for seamless streaming session
     },
+    ...(smtpConfigured ? {
+      email: {
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || "587", 10),
+        secure: process.env.SMTP_SECURE === "true",
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+        from: process.env.SMTP_FROM || process.env.SMTP_USER
+      }
+    } : {}),
     security: {
       enableRateLimit: false,
       corsOrigins: "*",
@@ -400,6 +414,12 @@ async function startServer() {
     const room = watchPartyManager.getRoom(req.params.roomCode);
     if (!room) return res.status(404).json({ error: "Watch Party room does not exist or has expired" });
     res.json(room);
+  });
+
+  // Lets the client fail clearly before it asks SecurePool to issue an OTP on
+  // a server that has no configured email transport.
+  app.get("/api/auth/email-status", (_req, res) => {
+    res.json({ otpEmailEnabled: smtpConfigured });
   });
 
   // 7. Instant Demo / Quick Access Login (generates valid RS256 token signed by SecurePool key)

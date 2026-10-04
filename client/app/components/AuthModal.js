@@ -11,6 +11,7 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [otpStep, setOtpStep] = useState(false);
   const [otpCode, setOtpCode] = useState("");
 
@@ -20,6 +21,7 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
   const handleQuickDemo = async (demoName, demoEmail) => {
     setLoading(true);
     setError("");
+    setNotice("");
     try {
       const res = await fetch(apiUrl("/auth/quick-access"), {
         method: "POST",
@@ -48,11 +50,17 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
     e.preventDefault();
     setLoading(true);
     setError("");
+    setNotice("");
 
     try {
       if (isRegister) {
         if (!otpStep) {
           // Step 1: Register
+          const emailStatus = await fetch(apiUrl("/api/auth/email-status"));
+          const { otpEmailEnabled } = emailStatus.ok ? await emailStatus.json() : {};
+          if (!otpEmailEnabled) {
+            throw new Error("OTP email is not configured on the server. Add SMTP_PASS to server/.env and restart the server.");
+          }
           const res = await fetch(apiUrl("/auth/register"), {
             method: "POST",
             headers: {
@@ -63,6 +71,12 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || "Registration failed");
+          if (data.developmentOtp) {
+            setOtpCode(data.developmentOtp);
+            setNotice("Development verification code has been filled in. Select Verify & Enter to finish sign-up.");
+          } else {
+            setNotice("A verification code has been sent to your email address.");
+          }
           setOtpStep(true);
         } else {
           // Step 2: Verify OTP
@@ -77,7 +91,7 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || "OTP verification failed");
 
-          const userObj = {
+          const userObj = data.user || {
             id: `usr_${email.substring(0, 8)}`,
             name: name || email.split("@")[0],
             email,
@@ -147,6 +161,12 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
         {error && (
           <div style={{ background: "rgba(239,68,68,0.15)", border: "1px solid #ef4444", color: "#fca5a5", padding: "10px 14px", borderRadius: "6px", fontSize: "13px" }}>
             {error}
+          </div>
+        )}
+
+        {notice && (
+          <div style={{ background: "rgba(70,211,105,0.12)", border: "1px solid #46d369", color: "#b7f7c6", padding: "10px 14px", borderRadius: "6px", fontSize: "13px" }}>
+            {notice}
           </div>
         )}
 
@@ -293,6 +313,8 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
               setIsRegister(!isRegister);
               setOtpStep(false);
               setError("");
+              setNotice("");
+              setOtpCode("");
             }}
             style={{ background: "none", border: "none", color: "#fff", fontWeight: 700, cursor: "pointer", textDecoration: "underline" }}
           >

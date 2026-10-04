@@ -257,7 +257,55 @@ export function setupWatchParty(io, tokenService, getMediaById) {
       }
     });
 
-    // 9. Disconnect & cleanup
+    // 9. Voice chat signaling. Audio travels browser-to-browser over WebRTC;
+    // the server only relays offer/answer/ICE messages to room members.
+    socket.on("party:voice:join", () => {
+      if (!currentRoomCode) return;
+      const room = rooms.get(currentRoomCode);
+      const participant = room?.participants.get(socket.id);
+      if (!room || !participant) return;
+
+      participant.voiceJoined = true;
+      participant.voiceMuted = false;
+      socket.emit("party:voice:participants", Array.from(room.participants.values())
+        .filter((item) => item.socketId !== socket.id && item.voiceJoined)
+        .map((item) => item.socketId));
+      socket.to(currentRoomCode).emit("party:voice:participant_joined", {
+        socketId: socket.id,
+        name: participant.name
+      });
+    });
+
+    socket.on("party:voice:mute", ({ muted }) => {
+      if (!currentRoomCode) return;
+      const room = rooms.get(currentRoomCode);
+      const participant = room?.participants.get(socket.id);
+      if (!participant?.voiceJoined) return;
+      participant.voiceMuted = Boolean(muted);
+      io.to(currentRoomCode).emit("party:voice:state", {
+        socketId: socket.id,
+        muted: participant.voiceMuted
+      });
+    });
+
+    socket.on("party:voice:leave", () => {
+      if (!currentRoomCode) return;
+      const room = rooms.get(currentRoomCode);
+      const participant = room?.participants.get(socket.id);
+      if (!participant?.voiceJoined) return;
+      participant.voiceJoined = false;
+      participant.voiceMuted = false;
+      socket.to(currentRoomCode).emit("party:voice:participant_left", { socketId: socket.id });
+    });
+
+    socket.on("party:voice:signal", ({ to, signal }) => {
+      if (!currentRoomCode || !to || !signal) return;
+      const room = rooms.get(currentRoomCode);
+      if (!room?.participants.has(socket.id) || !room.participants.has(to)) return;
+      io.to(to).emit("party:voice:signal", { from: socket.id, signal });
+    });
+
+    // 10. Disconnect & cleanup
     socket.on("disconnect", () => {
       if (!currentRoomCode) return;
       const room = rooms.get(currentRoomCode);
@@ -265,6 +313,9 @@ export function setupWatchParty(io, tokenService, getMediaById) {
 
       const leavingUser = room.participants.get(socket.id);
       room.participants.delete(socket.id);
+      if (leavingUser?.voiceJoined) {
+        socket.to(currentRoomCode).emit("party:voice:participant_left", { socketId: socket.id });
+      }
 
       if (room.participants.size === 0) {
         // Keep the invite valid while a player reconnects or changes devices.

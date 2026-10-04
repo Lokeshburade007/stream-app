@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Play,
   Pause,
@@ -19,7 +19,11 @@ import {
   Zap,
   Lock,
   Unlock,
-  Radio
+  Radio,
+  Mic,
+  MicOff,
+  PhoneOff,
+  Headphones
 } from "lucide-react";
 import { io } from "socket.io-client";
 import Hls from "hls.js";
@@ -71,6 +75,10 @@ export default function CinemaPlayer({
   const hlsRef = useRef(null);
   const autoPlayRef = useRef(true);
   const usedFallbackRef = useRef(false);
+  const localVoiceStreamRef = useRef(null);
+  const voicePeersRef = useRef(new Map());
+  const remoteVoiceAudioRef = useRef(new Map());
+  const voiceJoinedRef = useRef(false);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -97,6 +105,10 @@ export default function CinemaPlayer({
   const [playbackError, setPlaybackError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [sourceOverride, setSourceOverride] = useState(null);
+  const [voiceJoined, setVoiceJoined] = useState(false);
+  const [voiceMuted, setVoiceMuted] = useState(false);
+  const [voiceMembers, setVoiceMembers] = useState([]);
+  const [voiceError, setVoiceError] = useState("");
 
   const hideControlsTimer = useRef(null);
 
@@ -107,6 +119,102 @@ export default function CinemaPlayer({
   const isHlsStream = /\.m3u8(?:[?#]|$)/i.test(videoSrc);
   const externalSubtitleTracks = movie?.subtitleTracks || [];
   const availableSubtitleTracks = subtitleTracks.length ? subtitleTracks : externalSubtitleTracks;
+
+  const removeVoicePeer = useCallback((socketId) => {
+    const peer = voicePeersRef.current.get(socketId);
+    if (peer) peer.close();
+    voicePeersRef.current.delete(socketId);
+    const audio = remoteVoiceAudioRef.current.get(socketId);
+    if (audio) {
+      audio.pause();
+      audio.srcObject = null;
+    }
+    remoteVoiceAudioRef.current.delete(socketId);
+  }, []);
+
+  const createVoicePeer = useCallback((remoteSocketId, shouldOffer = false) => {
+    if (!voiceJoinedRef.current || !remoteSocketId || remoteSocketId === socketRef.current?.id) return null;
+    const existing = voicePeersRef.current.get(remoteSocketId);
+    if (existing) return existing;
+
+    const peer = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    });
+    voicePeersRef.current.set(remoteSocketId, peer);
+    localVoiceStreamRef.current?.getTracks().forEach((track) => peer.addTrack(track, localVoiceStreamRef.current));
+    peer.onicecandidate = ({ candidate }) => {
+      if (candidate) socketRef.current?.emit("party:voice:signal", { to: remoteSocketId, signal: { candidate } });
+    };
+    peer.ontrack = ({ streams }) => {
+      const stream = streams[0];
+      if (!stream) return;
+      const audio = new Audio();
+      audio.autoplay = true;
+      audio.srcObject = stream;
+      remoteVoiceAudioRef.current.set(remoteSocketId, audio);
+      audio.play().catch(() => {});
+    };
+    peer.onconnectionstatechange = () => {
+      if (["failed", "closed"].includes(peer.connectionState)) removeVoicePeer(remoteSocketId);
+    };
+
+    if (shouldOffer) {
+      peer.createOffer()
+        .then((offer) => peer.setLocalDescription(offer))
+        .then(() => socketRef.current?.emit("party:voice:signal", { to: remoteSocketId, signal: { description: peer.localDescription } }))
+        .catch(() => setVoiceError("Unable to connect voice chat to a participant."));
+    }
+    return peer;
+  }, [removeVoicePeer]);
+
+  const leaveVoiceChat = useCallback(() => {
+    socketRef.current?.emit("party:voice:leave");
+    voiceJoinedRef.current = false;
+    voicePeersRef.current.forEach((_, socketId) => removeVoicePeer(socketId));
+    localVoiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localVoiceStreamRef.current = null;
+    setVoiceJoined(false);
+    setVoiceMuted(false);
+    setVoiceMembers([]);
+  }, [removeVoicePeer]);
+
+  const toggleVoiceChat = useCallback(async () => {
+    if (voiceJoinedRef.current) {
+      leaveVoiceChat();
+      return;
+    }
+    if (!socketRef.current?.connected) {
+      setVoiceError("Join the watch party before starting voice chat.");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setVoiceError("This browser does not support microphone access.");
+      return;
+    }
+
+    try {
+      setVoiceError("");
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false
+      });
+      localVoiceStreamRef.current = stream;
+      voiceJoinedRef.current = true;
+      setVoiceJoined(true);
+      setVoiceMuted(false);
+      socketRef.current.emit("party:voice:join");
+    } catch (error) {
+      setVoiceError(error.name === "NotAllowedError" ? "Microphone permission was blocked. Allow it in your browser settings." : "Unable to access your microphone.");
+    }
+  }, [leaveVoiceChat]);
+
+  const toggleVoiceMute = useCallback(() => {
+    if (!voiceJoinedRef.current) return;
+    const muted = !voiceMuted;
+    localVoiceStreamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !muted; });
+    setVoiceMuted(muted);
+    socketRef.current?.emit("party:voice:mute", { muted });
+  }, [voiceMuted]);
 
   useEffect(() => {
     autoPlayRef.current = true;
@@ -225,6 +333,7 @@ export default function CinemaPlayer({
       setRoomState(data);
       setParticipants(data.participants);
       setChatMessages(data.messages);
+      setVoiceMembers(data.participants.filter((participant) => participant.voiceJoined).map((participant) => participant.socketId));
       if (videoRef.current && Number.isFinite(data.currentTime) && data.currentTime > 0) {
         videoRef.current.currentTime = data.currentTime;
       }
@@ -277,6 +386,49 @@ export default function CinemaPlayer({
       setRoomState((prev) => ({ ...prev, hostOnlyControl }));
     });
 
+    socket.on("party:voice:participants", (socketIds) => {
+      setVoiceMembers((previous) => [...new Set([...previous, ...socketIds, socket.id])]);
+      socketIds.forEach((socketId) => createVoicePeer(socketId, true));
+    });
+
+    socket.on("party:voice:participant_joined", ({ socketId }) => {
+      setVoiceMembers((previous) => [...new Set([...previous, socketId])]);
+      setParticipants((previous) => previous.map((participant) => participant.socketId === socketId
+        ? { ...participant, voiceJoined: true, voiceMuted: false }
+        : participant));
+    });
+
+    socket.on("party:voice:participant_left", ({ socketId }) => {
+      removeVoicePeer(socketId);
+      setVoiceMembers((previous) => previous.filter((id) => id !== socketId));
+    });
+
+    socket.on("party:voice:state", ({ socketId, muted }) => {
+      setParticipants((previous) => previous.map((participant) => participant.socketId === socketId
+        ? { ...participant, voiceMuted: muted, voiceJoined: true }
+        : participant));
+    });
+
+    socket.on("party:voice:signal", async ({ from, signal }) => {
+      if (!voiceJoinedRef.current) return;
+      try {
+        const peer = createVoicePeer(from, false);
+        if (!peer) return;
+        if (signal.description) {
+          await peer.setRemoteDescription(signal.description);
+          if (signal.description.type === "offer") {
+            const answer = await peer.createAnswer();
+            await peer.setLocalDescription(answer);
+            socket.emit("party:voice:signal", { to: from, signal: { description: peer.localDescription } });
+          }
+        } else if (signal.candidate) {
+          await peer.addIceCandidate(signal.candidate);
+        }
+      } catch {
+        setVoiceError("Voice connection could not be established with a participant.");
+      }
+    });
+
     socket.on("party:error", ({ message }) => {
       setSyncStatus(message || "Unable to join watch party");
     });
@@ -286,9 +438,10 @@ export default function CinemaPlayer({
     });
 
     return () => {
+      leaveVoiceChat();
       socket.disconnect();
     };
-  }, [watchPartyRoom, partyParticipant, user]);
+  }, [watchPartyRoom, partyParticipant, user, createVoicePeer, leaveVoiceChat, removeVoicePeer]);
 
   // 3. Auto-save progress to backend every 5 seconds for cross-device resume
   useEffect(() => {
@@ -904,12 +1057,44 @@ export default function CinemaPlayer({
             )}
           </div>
 
+          {/* Optional peer-to-peer voice chat. Movie sound remains controlled by
+              the player; this only controls the viewer's microphone. */}
+          <div className="voice-chat-panel">
+            <div>
+              <div className="voice-chat-title"><Headphones size={15} /> Party voice</div>
+              <div className="voice-chat-status">
+                {voiceJoined ? `${voiceMembers.length || 1} in voice` : "Join to speak with friends"}
+              </div>
+            </div>
+            <div className="voice-chat-actions">
+              {voiceJoined && (
+                <button
+                  type="button"
+                  className={`voice-action-button ${voiceMuted ? "muted" : ""}`}
+                  onClick={toggleVoiceMute}
+                  title={voiceMuted ? "Unmute microphone" : "Mute microphone"}
+                >
+                  {voiceMuted ? <MicOff size={16} /> : <Mic size={16} />}
+                </button>
+              )}
+              <button
+                type="button"
+                className={`voice-join-button ${voiceJoined ? "leave" : ""}`}
+                onClick={toggleVoiceChat}
+              >
+                {voiceJoined ? <><PhoneOff size={15} /> Leave</> : <><Mic size={15} /> Join voice</>}
+              </button>
+            </div>
+          </div>
+          {voiceError && <div className="voice-chat-error">{voiceError}</div>}
+
           {/* Connected Participants List */}
           <div className="participants-bar">
             {participants.map((p) => (
               <div key={p.socketId || p.userId} className="participant-chip">
                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: p.isHost ? "#E50914" : "#46d369" }} />
                 <span>{p.name}</span>
+                {p.voiceJoined && (p.voiceMuted ? <MicOff size={11} color="#aaa" /> : <Mic size={11} color="#46d369" />)}
                 {p.isHost && <span style={{ fontSize: 10, color: "#ffb703" }}>★ Host</span>}
               </div>
             ))}
