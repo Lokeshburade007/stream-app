@@ -40,6 +40,28 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
 
 ---
 
+## 📸 Application Screenshots
+
+### 1. Netflix-Style Home Dashboard & Featured Hero Banner
+![StreamHub Home Dashboard](docs/screenshots/01_home_dashboard.png)
+
+### 2. Real-Time Synchronized Watch Party & Live Chat
+![Watch Party Room](docs/screenshots/05_watch_party_room.png)
+
+### 3. Fullscreen Cinema Video Player with Custom Controls
+![Cinema Video Player](docs/screenshots/04_cinema_player.png)
+
+### 4. SecurePool RS256 Authentication with 1-Click Multi-Device Demo Profiles
+![SecurePool Authentication](docs/screenshots/02_securepool_auth.png)
+
+### 5. Watch Party Launcher (Host Room or Join with Code)
+![Watch Party Modal](docs/screenshots/03_watch_party_modal.png)
+
+### 6. Cross-Device "Continue Watching" & Streaming Tracks
+![Catalog Tracks](docs/screenshots/06_catalog_scroll.png)
+
+---
+
 ## 🏗️ Architecture
 
 ```
