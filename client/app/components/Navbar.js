@@ -1,13 +1,15 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Film, Users, Tv, Search, User, LogOut, Cast } from "lucide-react";
+import { Film, Users, Tv, Search, User, LogOut, Cast, HardDrive } from "lucide-react";
 
 export default function Navbar({
   user,
   onOpenAuth,
   onLogout,
   onOpenWatchPartyModal,
+  onOpenLibrary,
+  isHost,
   tvMode,
   onToggleTvMode,
   searchQuery,
@@ -90,6 +92,17 @@ export default function Navbar({
           <Tv size={14} />
           {tvMode ? "TV Mode: ON" : "TV Mode"}
         </button>
+
+        {user && (
+          <button
+            id="btn-host-library"
+            onClick={onOpenLibrary}
+            title={isHost ? "Upload or manage the host video library" : "Open the video library. Upload and deletion are restricted to the host account."}
+            style={{ display: "flex", alignItems: "center", gap: "6px", background: isHost ? "rgba(70,211,105,.12)" : "rgba(255,255,255,.08)", border: `1px solid ${isHost ? "#46d369" : "rgba(255,255,255,.25)"}`, color: isHost ? "#b7f7c6" : "#fff", padding: "6px 12px", borderRadius: "9999px", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}
+          >
+            <HardDrive size={14} /> {isHost ? "Upload Video" : "Video Library"}
+          </button>
+        )}
 
         {/* Watch Party Quick Button */}
         <button
@@ -181,6 +194,31 @@ export default function Navbar({
                     <Cast size={12} /> SecurePool Premium Verified
                   </div>
                 </div>
+
+                <button
+                  id="btn-host-library-menu"
+                  onClick={() => {
+                    setProfileDropdown(false);
+                    onOpenLibrary();
+                  }}
+                  title={isHost ? "Upload or manage the host video library" : "Only the configured host can upload or delete videos"}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    background: isHost ? "rgba(70,211,105,.12)" : "rgba(255,255,255,.06)",
+                    border: `1px solid ${isHost ? "#46d369" : "rgba(255,255,255,.18)"}`,
+                    borderRadius: "6px",
+                    color: isHost ? "#b7f7c6" : "#ddd",
+                    padding: "8px",
+                    cursor: "pointer",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    textAlign: "left"
+                  }}
+                >
+                  <HardDrive size={15} /> {isHost ? "Manage 10 GB Video Library" : "View Video Library"}
+                </button>
 
                 <button
                   onClick={() => {

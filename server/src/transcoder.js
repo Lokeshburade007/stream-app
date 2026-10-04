@@ -14,6 +14,7 @@ const QUALITY_LADDER = [
 ];
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mkv", ".mov", ".webm", ".m4v"]);
+const QUOTA_GUARD_BYTES = 32 * 1024 * 1024;
 
 if (ffmpegInstaller?.path) {
   ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -79,22 +80,55 @@ async function ensureDirectory(directory) {
   await fsp.mkdir(directory, { recursive: true });
 }
 
+async function directoryBytes(directory) {
+  let total = 0;
+  let entries = [];
+  try {
+    entries = await fsp.readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return 0;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) total += await directoryBytes(target);
+    else if (entry.isFile()) total += (await fsp.stat(target)).size;
+  }
+  return total;
+}
+
 export function isSupportedVideo(filename) {
   return VIDEO_EXTENSIONS.has(path.extname(filename || "").toLowerCase());
 }
 
 export class MediaTranscoder {
-  constructor({ mediaRoot, publicBasePath = "/media/hls" }) {
+  constructor({ mediaRoot, publicBasePath = "/media/hls", quotaBytes = 10 * 1024 * 1024 * 1024 }) {
     this.mediaRoot = mediaRoot;
     this.uploadRoot = path.join(mediaRoot, "uploads");
     this.hlsRoot = path.join(mediaRoot, "hls");
     this.publicBasePath = publicBasePath.replace(/\/$/, "");
+    this.quotaBytes = quotaBytes;
+    this.manifestPath = path.join(mediaRoot, "library.json");
     this.jobs = new Map();
     this.completedMedia = new Map();
   }
 
   async initialize() {
     await Promise.all([ensureDirectory(this.uploadRoot), ensureDirectory(this.hlsRoot)]);
+    try {
+      const saved = JSON.parse(await fsp.readFile(this.manifestPath, "utf8"));
+      for (const media of Array.isArray(saved) ? saved : []) {
+        const jobId = String(media.id || "").replace(/^local_/, "");
+        if (!/^[a-f0-9-]{36}$/i.test(jobId)) continue;
+        try {
+          await fsp.access(path.join(this.hlsRoot, jobId, "master.m3u8"));
+          this.completedMedia.set(media.id, media);
+        } catch {}
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") console.warn("Unable to load media library manifest:", error.message);
+    }
   }
 
   getUploadDirectory() {
@@ -112,6 +146,38 @@ export class MediaTranscoder {
 
   getMediaById(mediaId) {
     return this.completedMedia.get(mediaId) || null;
+  }
+
+  hasActiveJob() {
+    return [...this.jobs.values()].some((job) => !["completed", "failed"].includes(job.status));
+  }
+
+  async getStorageStats() {
+    const usedBytes = await directoryBytes(this.uploadRoot) + await directoryBytes(this.hlsRoot);
+    return {
+      quotaBytes: this.quotaBytes,
+      usedBytes,
+      availableBytes: Math.max(0, this.quotaBytes - usedBytes),
+      mediaCount: this.completedMedia.size,
+      activeJob: this.hasActiveJob()
+    };
+  }
+
+  async saveManifest() {
+    const temporaryPath = `${this.manifestPath}.tmp`;
+    await fsp.writeFile(temporaryPath, JSON.stringify(this.getCompletedMedia(), null, 2), "utf8");
+    await fsp.rename(temporaryPath, this.manifestPath);
+  }
+
+  async deleteMedia(mediaId) {
+    const media = this.completedMedia.get(mediaId);
+    if (!media) return false;
+    const jobId = String(mediaId).replace(/^local_/, "");
+    if (!/^[a-f0-9-]{36}$/i.test(jobId)) throw new Error("Invalid library media identifier");
+    await fsp.rm(path.join(this.hlsRoot, jobId), { recursive: true, force: true });
+    this.completedMedia.delete(mediaId);
+    await this.saveManifest();
+    return true;
   }
 
   start(file) {
@@ -135,6 +201,7 @@ export class MediaTranscoder {
       job.status = "failed";
       job.error = error.message || "Transcoding failed";
       job.updatedAt = new Date().toISOString();
+      void this.cleanupJob(job);
       console.error(`HLS transcode ${job.id} failed:`, error);
     });
 
@@ -158,7 +225,48 @@ export class MediaTranscoder {
     Object.assign(job, values, { updatedAt: new Date().toISOString() });
   }
 
+  async cleanupJob(job) {
+    await Promise.all([
+      fsp.rm(job.outputDirectory, { recursive: true, force: true }),
+      fsp.unlink(job.inputPath).catch(() => {})
+    ]);
+  }
+
+  async runWithQuotaGuard(command) {
+    let exceeded = false;
+    let checking = false;
+    const guard = setInterval(() => {
+      if (checking) return;
+      checking = true;
+      this.getStorageStats()
+        .then((stats) => {
+          if (stats.usedBytes >= this.quotaBytes - QUOTA_GUARD_BYTES) {
+            exceeded = true;
+            command.kill("SIGKILL");
+          }
+        })
+        .catch(() => {})
+        .finally(() => { checking = false; });
+    }, 250);
+
+    try {
+      await runFfmpeg(command);
+    } catch (error) {
+      if (exceeded) {
+        throw new Error("The 10 GB library storage limit was reached during transcoding");
+      }
+      throw error;
+    } finally {
+      clearInterval(guard);
+    }
+    if (exceeded) throw new Error("The 10 GB library storage limit was reached during transcoding");
+  }
+
   async process(job) {
+    const beforeProcess = await this.getStorageStats();
+    if (beforeProcess.usedBytes > this.quotaBytes - QUOTA_GUARD_BYTES) {
+      throw new Error("The 10 GB library storage limit has been reached. Delete the current movie before uploading another.");
+    }
     this.updateJob(job, { status: "probing", progress: 4 });
     const metadata = await probe(job.inputPath);
     const videoStream = metadata.streams?.find((stream) => stream.codec_type === "video");
@@ -219,6 +327,7 @@ export class MediaTranscoder {
     };
 
     this.completedMedia.set(media.id, media);
+    await this.saveManifest();
     this.updateJob(job, { status: "completed", progress: 100, media });
 
     // The original source is no longer needed after the HLS package is complete.
@@ -226,7 +335,7 @@ export class MediaTranscoder {
   }
 
   async createPreview(inputPath, outputPath) {
-    await runFfmpeg(
+    await this.runWithQuotaGuard(
       ffmpeg(inputPath)
         .setStartTime(0)
         .duration(10)
@@ -284,7 +393,7 @@ export class MediaTranscoder {
       })
       .output(playlistTemplate);
 
-    await runFfmpeg(command);
+    await this.runWithQuotaGuard(command);
   }
 
   async createThumbnailSprite(job, { duration, width, height }) {

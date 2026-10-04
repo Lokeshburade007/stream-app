@@ -19,6 +19,10 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
   - Uploads MP4, MKV, MOV, M4V, and WebM into adaptive HLS (`.m3u8`) ladders at 360p, 720p, and 1080p.
   - Produces a preview clip, subtitle and chapter VTT files, plus a storyboard sprite for scrub-hover previews.
   - Uses hls.js for adaptive browser playback, manual quality selection, and available audio/subtitle tracks.
+- **Host-only 10 GB Personal Video Library**:
+  - A verified SecurePool host uploads one authorized source video, which is packaged as adaptive HLS for solo playback and Watch Parties.
+  - Storage is strictly capped across temporary uploads and generated HLS files; the original source is removed after a successful encode.
+  - See [Host Video Library](docs/HOST_VIDEO_LIBRARY.md) for configuration, UI usage, APIs, storage logic, and troubleshooting.
 - **Free Movies Streaming API & Metadata**:
   - Integrated with the **Internet Archive Open Feature Films API** and Open Cinema projects.
   - Verified full-length classics (*Night of the Living Dead*, *The Fast And The Furious (1955)*, *Voyage to the Planet of Prehistoric Women*, *House on Haunted Hill*, *The Stranger* by Orson Welles, *Jungle Book*, *Tears of Steel*, *Big Buck Bunny*, *Sintel*).
@@ -178,8 +182,11 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | `GET` | `/api/media` | Full media catalog with categories and featured banner |
 | `GET` | `/api/media/:id` | Individual title metadata |
 | `GET` | `/api/media/stream/:id` | HTTP 206 Partial Content byte-range video stream |
-| `POST` | `/api/media/upload` | Upload a `video` multipart field and start background HLS encoding |
+| `GET` | `/api/library/access` | Returns whether the signed-in user can manage the host video library |
+| `GET` | `/api/library` | Host-only quota, storage usage, and completed personal-library metadata |
+| `POST` | `/api/media/upload` | Host-only upload of a `video` multipart field and start background HLS encoding |
 | `GET` | `/api/media/uploads/:jobId` | Retrieve HLS encoding job status and completed media metadata |
+| `DELETE` | `/api/library/:mediaId` | Host-only deletion of a completed personal-library title and its HLS files |
 | `GET` | `/api/movies/free` | Curated free streaming movies list |
 | `GET` | `/api/movies/search?q=...` | Live Internet Archive free movie search |
 | `POST` | `/api/user/progress` | Save playback timestamp (cross-device resume) |
@@ -188,16 +195,10 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ### Uploading a personal video
 
-The backend transcodes uploads in the background. Once a job reports `completed`,
-the video appears under **My Library** and is available for adaptive playback and
-watch parties.
-
-```bash
-curl -F "video=@/absolute/path/to/video.mp4" http://localhost:5001/api/media/upload
-```
-
-Poll the returned `statusUrl` until `status` is `completed`. Generated uploads and
-HLS segments live under `server/media/` and are intentionally ignored by Git.
+The personal library is host-only and has a strict total storage quota. Sign in
+with the verified `HOST_EMAIL`, open **Upload Video**, and use the library
+manager. Full behavior and authenticated API examples are in
+[Host Video Library](docs/HOST_VIDEO_LIBRARY.md).
 
 ---
 

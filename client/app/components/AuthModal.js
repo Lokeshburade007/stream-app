@@ -181,7 +181,7 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
             <button
               id="btn-demo-host"
               type="button"
-              onClick={() => handleQuickDemo("Lokesh (Host)", "lokesh@streamhub.io")}
+              onClick={() => handleQuickDemo("Lokesh (Demo)", "lokesh-demo@streamhub.io")}
               style={{
                 display: "flex",
                 flexDirection: "column",
@@ -196,9 +196,9 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 700 }}>
-                <Laptop size={14} /> Lokesh (Host)
+                <Laptop size={14} /> Lokesh (Demo)
               </div>
-              <span style={{ fontSize: 10, color: "#aaa" }}>TV & Laptop Host</span>
+              <span style={{ fontSize: 10, color: "#aaa" }}>TV & Laptop Viewer</span>
             </button>
 
             <button

@@ -8,6 +8,7 @@ import CinemaPlayer from "./components/CinemaPlayer";
 import WatchPartyModal from "./components/WatchPartyModal";
 import AuthModal from "./components/AuthModal";
 import InfoModal from "./components/InfoModal";
+import LibraryManagerModal from "./components/LibraryManagerModal";
 import { Users, Film, Radio, Shield, Server, RefreshCw } from "lucide-react";
 import { io } from "socket.io-client";
 import { API_URL, apiUrl } from "./lib/api";
@@ -31,6 +32,8 @@ export default function Home() {
   const [partyParticipant, setPartyParticipant] = useState(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isPartyModalOpen, setIsPartyModalOpen] = useState(false);
+  const [isLibraryModalOpen, setIsLibraryModalOpen] = useState(false);
+  const [canManageLibrary, setCanManageLibrary] = useState(false);
   const [infoModalMovie, setInfoModalMovie] = useState(null);
   const [tvMode, setTvMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -118,6 +121,26 @@ export default function Home() {
       return () => window.clearTimeout(progressRequest);
     }
   }, [user]);
+
+  // The server is the source of truth for host-only library access. This
+  // avoids a frontend environment value drifting from HOST_EMAIL on the API.
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    const checkAccess = async () => {
+      try {
+        const response = await fetch(apiUrl("/api/library/access"), {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+        const data = await response.json();
+        if (!cancelled) setCanManageLibrary(Boolean(response.ok && data.canManage));
+      } catch {
+        if (!cancelled) setCanManageLibrary(false);
+      }
+    };
+    void checkAccess();
+    return () => { cancelled = true; };
+  }, [authToken]);
 
   // 4. Playback Actions
   const handlePlayMovie = (movie) => {
@@ -217,6 +240,7 @@ export default function Home() {
     localStorage.removeItem("stream_auth_token");
     setUser(null);
     setAuthToken(null);
+    setCanManageLibrary(false);
     setContinueWatching([]);
   };
 
@@ -269,6 +293,8 @@ export default function Home() {
         onOpenAuth={() => setIsAuthModalOpen(true)}
         onLogout={handleLogout}
         onOpenWatchPartyModal={() => setIsPartyModalOpen(true)}
+        onOpenLibrary={() => setIsLibraryModalOpen(true)}
+        isHost={canManageLibrary}
         tvMode={tvMode}
         onToggleTvMode={() => setTvMode(!tvMode)}
         searchQuery={searchQuery}
@@ -525,6 +551,13 @@ export default function Home() {
           const m = catalog.find((item) => item.id === movieId) || catalog[0];
           handleStartWatchParty(m, hostOnly);
         }}
+      />
+
+      <LibraryManagerModal
+        isOpen={isLibraryModalOpen}
+        onClose={() => setIsLibraryModalOpen(false)}
+        authToken={authToken}
+        onLibraryChanged={() => fetchMedia({ forceRefresh: true })}
       />
 
       {/* Auth Modal */}

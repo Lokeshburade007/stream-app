@@ -33,6 +33,9 @@ const __dirname = path.dirname(__filename);
 const PORT = parseInt(process.env.PORT || "5001", 10);
 const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017/stream_hub";
 const MEDIA_ROOT = path.resolve(__dirname, "../media");
+const LIBRARY_QUOTA_BYTES = Math.max(1, Number(process.env.VIDEO_STORAGE_QUOTA_GB || 10)) * 1024 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = Math.min(2 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * 0.25));
+const HOST_EMAIL = (process.env.HOST_EMAIL || "lokesh@streamhub.io").trim().toLowerCase();
 
 // Read JWT RSA Keys
 function getJwtKeys() {
@@ -52,7 +55,7 @@ function getJwtKeys() {
 
 async function startServer() {
   const { privateKey, publicKey } = getJwtKeys();
-  const transcoder = new MediaTranscoder({ mediaRoot: MEDIA_ROOT });
+  const transcoder = new MediaTranscoder({ mediaRoot: MEDIA_ROOT, quotaBytes: LIBRARY_QUOTA_BYTES });
   await transcoder.initialize();
 
   // Connect Mongoose for custom stream models (WatchProgress)
@@ -103,6 +106,31 @@ async function startServer() {
 
   const { app, authMiddleware, tokenService } = securePool;
 
+  const getAccessClaims = async (req) => {
+    const authorization = req.headers.authorization || "";
+    if (!authorization.startsWith("Bearer ")) {
+      return null;
+    }
+    try {
+      const token = authorization.slice("Bearer ".length);
+      return await tokenService.verifyAccessToken(token);
+    } catch {
+      return null;
+    }
+  };
+
+  const requireHost = async (req, res, next) => {
+    const claims = await getAccessClaims(req);
+    if (!claims) {
+      return res.status(401).json({ error: "Your sign-in session is missing or expired. Sign in again as Lokesh (Host)." });
+    }
+    if (String(claims.email || "").trim().toLowerCase() !== HOST_EMAIL) {
+      return res.status(403).json({ error: `This account is not the configured library host. Sign in as ${HOST_EMAIL}.` });
+    }
+    req.hostUser = { userId: claims.sub, email: claims.email };
+    next();
+  };
+
   const upload = multer({
     storage: multer.diskStorage({
       destination: (_req, _file, callback) => callback(null, transcoder.getUploadDirectory()),
@@ -111,7 +139,7 @@ async function startServer() {
         callback(null, `${crypto.randomUUID()}${extension}`);
       }
     }),
-    limits: { fileSize: 20 * 1024 * 1024 * 1024 },
+    limits: { fileSize: MAX_UPLOAD_BYTES },
     fileFilter: (_req, file, callback) => {
       if (!isSupportedVideo(file.originalname)) {
         callback(new Error("Only MP4, MKV, MOV, M4V, and WebM video files are supported"));
@@ -183,9 +211,35 @@ async function startServer() {
     }
   }));
 
-  // Uploading starts a background encode. Clients poll the status endpoint and
-  // completed files are immediately included in the My Library catalogue row.
-  app.post("/api/media/upload", (req, res) => {
+  // The personal library is intentionally host-only and holds one movie at a
+  // time. The original is deleted after HLS packaging, while the full HLS
+  // package remains inside a strict 10 GB server-side quota.
+  app.get("/api/library/access", async (req, res) => {
+    const claims = await getAccessClaims(req);
+    if (!claims) return res.status(401).json({ canManage: false });
+    res.json({
+      canManage: String(claims.email || "").trim().toLowerCase() === HOST_EMAIL
+    });
+  });
+
+  app.get("/api/library", requireHost, async (_req, res) => {
+    res.json({
+      storage: await transcoder.getStorageStats(),
+      maxUploadBytes: MAX_UPLOAD_BYTES,
+      media: transcoder.getCompletedMedia()
+    });
+  });
+
+  app.post("/api/media/upload", requireHost, async (req, res) => {
+    const storage = await transcoder.getStorageStats();
+    const requestBytes = Number(req.headers["content-length"] || 0);
+    if (storage.mediaCount || storage.activeJob || storage.usedBytes > 0) {
+      return res.status(409).json({ error: "Delete the current library movie before uploading another one." });
+    }
+    if (requestBytes && requestBytes > MAX_UPLOAD_BYTES) {
+      return res.status(413).json({ error: `Upload exceeds the ${Math.floor(MAX_UPLOAD_BYTES / 1024 / 1024 / 1024)} GB input limit.` });
+    }
+
     upload.single("video")(req, res, (error) => {
       if (error) return res.status(400).json({ error: error.message });
       if (!req.file) return res.status(400).json({ error: "Attach a video file in the 'video' field" });
@@ -197,6 +251,19 @@ async function startServer() {
         statusUrl: `/api/media/uploads/${job.id}`
       });
     });
+  });
+
+  app.delete("/api/library/:mediaId", requireHost, async (req, res) => {
+    if (transcoder.hasActiveJob()) {
+      return res.status(409).json({ error: "Wait for the current encoding job to finish before deleting the library movie." });
+    }
+    try {
+      const deleted = await transcoder.deleteMedia(req.params.mediaId);
+      if (!deleted) return res.status(404).json({ error: "Library movie not found" });
+      res.json({ message: "Library movie and its HLS files were deleted", storage: await transcoder.getStorageStats() });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
   });
 
   app.get("/api/media/uploads/:jobId", (req, res) => {
@@ -456,6 +523,9 @@ async function startServer() {
   app.post("/auth/quick-access", async (req, res) => {
     try {
       const { name = "Lokesh", email = "lokesh@streamhub.io", tenantId = "default" } = req.body;
+      if (String(email).trim().toLowerCase() === HOST_EMAIL) {
+        return res.status(403).json({ error: "The host account must use verified SecurePool sign-in; demo access cannot manage the video library." });
+      }
       const userId = `usr_${Buffer.from(email).toString("hex").substring(0, 12)}`;
 
       const accessToken = await tokenService.generateAccessToken(userId, tenantId, {
@@ -491,6 +561,7 @@ async function startServer() {
     console.log(`📡 HTTP API & Streaming: http://localhost:${PORT}`);
     console.log(`📖 Swagger Docs:         http://localhost:${PORT}/docs`);
     console.log(`⚡ WebSocket Engine:      Active on port ${PORT}`);
+    console.log(`🎞️  Video Library:        ${Math.round(LIBRARY_QUOTA_BYTES / 1024 / 1024 / 1024)} GB · Host ${HOST_EMAIL}`);
     console.log(`======================================================\n`);
   });
 }
