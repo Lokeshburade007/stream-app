@@ -21,8 +21,7 @@ import {
 } from "./freeMovieApi.js";
 import {
   getSeriesEpisodes,
-  getTopTvSeries,
-  STREAMABLE_CLASSIC_SERIES
+  getTopTvSeries
 } from "./seriesApi.js";
 import { isSupportedVideo, MediaTranscoder } from "./transcoder.js";
 import { setupWatchParty } from "./watchParty.js";
@@ -240,15 +239,14 @@ async function startServer() {
     }
   });
 
-  // 3b. Get Series & Shows listing (both streamable series and top TV shows)
+  // 3b. Get Series & Shows listing from the live TV guide.
   app.get("/api/series", async (req, res) => {
     try {
       const topShows = await getTopTvSeries(30);
-      const allSeries = [...STREAMABLE_CLASSIC_SERIES, ...topShows];
       res.json({
-        series: allSeries,
-        total: allSeries.length,
-        streamableCount: STREAMABLE_CLASSIC_SERIES.length
+        series: topShows,
+        total: topShows.length,
+        streamableCount: 0
       });
     } catch (err) {
       res.status(502).json({ error: "Series catalog is temporarily unavailable", detail: err.message });

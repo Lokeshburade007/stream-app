@@ -1,7 +1,6 @@
 import dns from "node:dns";
 dns.setDefaultResultOrder("ipv4first");
-import { MEDIA_CATALOG } from "./catalog.js";
-import { STREAMABLE_CLASSIC_SERIES, getTopTvSeries } from "./seriesApi.js";
+import { getTopTvSeries } from "./seriesApi.js";
 
 // Live, key-free catalogue providers.
 //
@@ -326,21 +325,35 @@ function archiveSearchUrl(query, limit, sort = "downloads desc", catalogueFilter
 export async function searchArchiveMovies(query, limit = 12) {
   try {
     const data = await fetchJson(archiveSearchUrl(query, limit));
-    return (data?.response?.docs || []).map(toArchiveMedia).filter(Boolean);
+    return verifyArchiveMedia((data?.response?.docs || []).map(toArchiveMedia).filter(Boolean));
   } catch (error) {
     console.warn("Internet Archive search unavailable:", error.message);
     return [];
   }
 }
 
+// Search results can retain an h.264 metadata flag after the actual upload has
+// been removed. Resolve an item file first so every playable card can start.
+async function verifyArchiveMedia(items) {
+  const verified = await Promise.all(items.map(async (item) => {
+    try {
+      return await resolveArchiveStreamUrl(item.archiveIdentifier) ? item : null;
+    } catch {
+      return null;
+    }
+  }));
+  return verified.filter(Boolean);
+}
+
 async function discoverTrendingArchiveMovies() {
   try {
     const data = await fetchJson(archiveSearchUrl("", 24, "downloads desc"));
     const movies = (data?.response?.docs || []).map(toArchiveMedia).filter(Boolean);
-    return movies.length ? movies : FALLBACK_OPEN_MOVIES;
+    const verified = await verifyArchiveMedia(movies);
+    return verified.length ? verified : verifyArchiveMedia(FALLBACK_OPEN_MOVIES);
   } catch (error) {
     console.warn("Global Internet Archive discovery unavailable:", error.message);
-    return FALLBACK_OPEN_MOVIES;
+    return verifyArchiveMedia(FALLBACK_OPEN_MOVIES);
   }
 }
 
@@ -348,10 +361,11 @@ async function discoverIndianArchiveMovies() {
   try {
     const data = await fetchJson(archiveSearchUrl("", 18, "downloads desc", INDIA_ARCHIVE_FILTER));
     const movies = (data?.response?.docs || []).map(toArchiveMedia).filter(Boolean);
-    return movies.length ? movies : FALLBACK_OPEN_MOVIES;
+    const verified = await verifyArchiveMedia(movies);
+    return verified.length ? verified : verifyArchiveMedia(FALLBACK_OPEN_MOVIES);
   } catch (error) {
     console.warn("Indian Internet Archive discovery unavailable:", error.message);
-    return FALLBACK_OPEN_MOVIES;
+    return verifyArchiveMedia(FALLBACK_OPEN_MOVIES);
   }
 }
 
@@ -467,12 +481,8 @@ async function buildLiveCatalog() {
     discoverTmdbFocus()
   ]);
 
-  const openMasters = (MEDIA_CATALOG || []).map((m) => ({
-    ...m,
-    playable: true
-  }));
-  const streamableMovies = [...openMasters, ...globalMovies];
-  const allSeries = [...STREAMABLE_CLASSIC_SERIES, ...topSeries, ...airingSeries];
+  const streamableMovies = globalMovies;
+  const allSeries = [...topSeries, ...airingSeries];
   const all = [
     ...streamableMovies,
     ...allSeries,
@@ -484,15 +494,9 @@ async function buildLiveCatalog() {
     ...tmdb.netflixSeries
   ];
 
-  const featured = streamableMovies[0] || STREAMABLE_CLASSIC_SERIES[0] || null;
+  const featured = streamableMovies[0] || allSeries[0] || null;
 
   const categories = [
-    {
-      id: "classic-series",
-      title: "Classic TV Series (Watch Full Episodes)",
-      subtitle: "Multi-episode streamable series · Bonanza, Sherlock Holmes, Beverly Hillbillies & more",
-      items: STREAMABLE_CLASSIC_SERIES
-    },
     {
       id: "popular-tv-shows",
       title: "Popular TV Shows & Series Guide",
@@ -540,7 +544,7 @@ async function buildLiveCatalog() {
     all,
     totalTitles: all.length,
     updatedAt: new Date().toISOString(),
-    sources: ["Internet Archive", "TVMaze", "Open Cinema", ...(tmdb.configured ? ["TMDB / JustWatch"] : [])],
+    sources: ["Internet Archive", "TVMaze", ...(tmdb.configured ? ["TMDB / JustWatch"] : [])],
     tmdbConfigured: tmdb.configured
   };
 }
@@ -571,17 +575,7 @@ export async function searchLiveMedia(query, limit = 10) {
   const trimmedQuery = cleanText(query);
   if (!trimmedQuery) return [];
 
-  // Match local catalog and classic series
   const lowerQ = trimmedQuery.toLowerCase();
-  const matchedSeries = STREAMABLE_CLASSIC_SERIES.filter((s) =>
-    s.title.toLowerCase().includes(lowerQ) ||
-    (s.genres || []).some((g) => g.toLowerCase().includes(lowerQ))
-  );
-
-  const matchedOpen = (MEDIA_CATALOG || []).filter((m) =>
-    m.title.toLowerCase().includes(lowerQ) ||
-    (m.genres || []).some((g) => g.toLowerCase().includes(lowerQ))
-  );
 
   const [movies, tvResults, tmdbResults] = await Promise.all([
     searchArchiveMovies(trimmedQuery, limit),
@@ -615,49 +609,10 @@ export async function searchLiveMedia(query, limit = 10) {
     return haystack.includes(lowerQ);
   });
 
-  return [...matchedSeries, ...matchedOpen, ...curatedResults, ...movies, ...tvResults, ...tmdbResults];
+  return [...curatedResults, ...movies, ...tvResults, ...tmdbResults];
 }
 
 export async function findLiveMedia(id) {
-  // Check open catalog
-  const open = (MEDIA_CATALOG || []).find((item) => item.id === id);
-  if (open) return { ...open, playable: true };
-
-  // Check classic series and episodes
-  for (const s of STREAMABLE_CLASSIC_SERIES) {
-    if (s.id === id) return s;
-    const ep = s.episodes?.find((e) => e.id === id || e.archiveIdentifier === id);
-    if (ep) {
-      return {
-        id: ep.id,
-        title: `${s.title}: ${ep.title}`,
-        tagline: `Season ${ep.season} Episode ${ep.number}`,
-        synopsis: ep.synopsis,
-        backdrop: ep.image,
-        poster: ep.image,
-        videoSource: ep.videoSource,
-        duration: 0,
-        durationFormatted: ep.duration,
-        year: s.year,
-        maturityRating: s.maturityRating,
-        resolution: s.resolution,
-        audio: s.audio,
-        matchScore: s.matchScore,
-        genres: s.genres,
-        cast: s.cast,
-        director: s.director,
-        category: s.category,
-        mediaType: "series",
-        provider: s.provider,
-        playable: true,
-        seriesId: s.id,
-        seasonNumber: ep.season,
-        episodeNumber: ep.number,
-        hasEpisodes: true
-      };
-    }
-  }
-
   const catalog = await getLiveCatalog();
   const cached = catalog.all.find((item) => item.id === id);
   if (cached) return cached;

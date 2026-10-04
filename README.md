@@ -20,9 +20,14 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
   - Produces a preview clip, subtitle and chapter VTT files, plus a storyboard sprite for scrub-hover previews.
   - Uses hls.js for adaptive browser playback, manual quality selection, and available audio/subtitle tracks.
 - **Free Movies Streaming API & Metadata**:
-  - Integrated with the **Internet Archive Open Feature Films API**.
-  - Verified full-length classics (*Night of the Living Dead*, *The Fast And The Furious (1955)*, *Voyage to the Planet of Prehistoric Women*, *House on Haunted Hill*, *The Stranger* by Orson Welles, *Jungle Book*).
+  - Integrated with the **Internet Archive Open Feature Films API** and Open Cinema projects.
+  - Verified full-length classics (*Night of the Living Dead*, *The Fast And The Furious (1955)*, *Voyage to the Planet of Prehistoric Women*, *House on Haunted Hill*, *The Stranger* by Orson Welles, *Jungle Book*, *Tears of Steel*, *Big Buck Bunny*, *Sintel*).
   - Dynamic live search querying the Internet Archive in real time with playable streaming links and metadata.
+- **TV Series & Multi-Episode Guide Engine**:
+  - Powered by the **TVMaze Live Series API** and **Internet Archive Classic TV Series**.
+  - Multi-season episode breakdown (Season 1 through Season 5) with individual episode cards, runtimes, air dates, and synopsis overviews.
+  - Verified streamable TV series (*Bonanza*, *The Beverly Hillbillies*, *Sherlock Holmes 1954*, *Flash Gordon*) with instant episode video playback and synchronized watch parties.
+  - Interactive Season and Episode drawer in the Info Modal.
 - **Real-Time Watch Party (Socket.io)**:
   - Generate shareable 6-character room codes (e.g. `NET892`) or 1-click invite links.
   - Sub-second playback synchronization (play, pause, seek, and buffer status sync across all connected friends).
@@ -59,6 +64,26 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
 
 ### 6. Cross-Device "Continue Watching" & Streaming Tracks
 ![Catalog Tracks](docs/screenshots/06_catalog_scroll.png)
+
+### 7. Multi-Season Series & Episode Picker (TVMaze Live Guide)
+![Series & Episodes Modal](docs/screenshots/08_series_episodes_modal.png)
+
+### 8. Live Production Deployment on Oracle Cloud VPS
+![Live Production Deployment](docs/screenshots/07_remote_deployment.png)
+
+---
+
+## 🌐 Live Production Deployment
+
+StreamHub is live and fully accessible on Oracle Cloud Infrastructure (Ampere A1 ARM64):
+- **Live Platform**: [http://141.148.222.13](http://141.148.222.13)
+- **Interactive API Documentation (Swagger)**: [http://141.148.222.13/docs](http://141.148.222.13/docs)
+- **Deployment Stack**:
+  - **Reverse Proxy**: Nginx 1.18 on Port 80 (with WebSocket upgrade & Gzip compression)
+  - **Frontend**: Next.js 16 (Turbopack) on Port 3000 managed by PM2
+  - **Backend**: Node.js Express + Socket.io on Port 5001 managed by PM2
+  - **Database**: MongoDB 7.0 systemd service (Ubuntu 20.04 ARM64)
+  - **Auth**: `securepool@1.1.3` RS256 Asymmetric JWT Tokens
 
 ---
 
