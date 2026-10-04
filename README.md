@@ -30,6 +30,7 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
   - See [Host Video Library](docs/HOST_VIDEO_LIBRARY.md) for configuration, UI usage, APIs, storage logic, and troubleshooting.
 - **Free Movies Streaming API & Metadata**:
   - Integrated with the **Internet Archive Open Feature Films API** and Open Cinema projects.
+  - A server-side family-safe policy excludes upstream titles marked adult and titles whose public metadata identifies sexual content, before catalogues, searches, or party creation receive them.
   - Verified full-length classics (*Night of the Living Dead*, *The Fast And The Furious (1955)*, *Voyage to the Planet of Prehistoric Women*, *House on Haunted Hill*, *The Stranger* by Orson Welles, *Jungle Book*, *Tears of Steel*, *Big Buck Bunny*, *Sintel*).
   - Dynamic live search querying the Internet Archive in real time with playable streaming links and metadata.
 - **TV Series & Multi-Episode Guide Engine**:

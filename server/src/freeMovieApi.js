@@ -1,6 +1,7 @@
 import dns from "node:dns";
 dns.setDefaultResultOrder("ipv4first");
 import { getTopTvSeries } from "./seriesApi.js";
+import { filterFamilySafeMedia, isFamilySafeMedia } from "./contentPolicy.js";
 
 // Live, key-free catalogue providers.
 //
@@ -182,7 +183,7 @@ function toArchiveMedia(doc) {
   const genres = listFrom(doc.genre, ["Feature Film"]);
   const minutes = Number(doc.runtime || doc.duration) || 0;
 
-  return {
+  const media = {
     id: `archive_${identifier}`,
     archiveIdentifier: identifier,
     title,
@@ -208,6 +209,7 @@ function toArchiveMedia(doc) {
     playable: true,
     isFeatured: false
   };
+  return isFamilySafeMedia(media) ? media : null;
 }
 
 function toTvMazeMedia(show, episode = null, options = {}) {
@@ -223,7 +225,7 @@ function toTvMazeMedia(show, episode = null, options = {}) {
   const image = episode?.image?.original || episode?.image?.medium || show.image?.original || show.image?.medium || "/backdrops/cosmic_odyssey.jpg";
   const network = show.webChannel?.name || show.network?.name || "TVMaze";
 
-  return {
+  const media = {
     id: `tvmaze_${show.id}`,
     tvMazeId: show.id,
     title: cleanText(show.name, "Untitled series"),
@@ -261,6 +263,7 @@ function toTvMazeMedia(show, episode = null, options = {}) {
         }
       : null
   };
+  return isFamilySafeMedia(media) ? media : null;
 }
 
 function tmdbImage(path, size = "original") {
@@ -268,7 +271,7 @@ function tmdbImage(path, size = "original") {
 }
 
 function toTmdbMedia(item, mediaType, focus) {
-  if (!item?.id) return null;
+  if (!item?.id || item.adult === true) return null;
 
   const isMovie = mediaType === "movie";
   const title = cleanText(isMovie ? item.title : item.name, "Untitled title");
@@ -277,7 +280,7 @@ function toTmdbMedia(item, mediaType, focus) {
   const genres = genreIds.map((id) => TMDB_GENRES[id]).filter(Boolean).slice(0, 4);
   const score = Number(item.vote_average) > 0 ? Math.round(Math.min(99, Number(item.vote_average) * 10)) : 85;
 
-  return {
+  const media = {
     id: `tmdb_${mediaType}_${item.id}`,
     tmdbId: item.id,
     title,
@@ -305,6 +308,7 @@ function toTmdbMedia(item, mediaType, focus) {
     playable: false,
     isFeatured: false
   };
+  return isFamilySafeMedia(media) ? media : null;
 }
 
 function archiveSearchUrl(query, limit, sort = "downloads desc", catalogueFilter = "") {
@@ -481,18 +485,26 @@ async function buildLiveCatalog() {
     discoverTmdbFocus()
   ]);
 
-  const streamableMovies = globalMovies;
-  const allSeries = [...topSeries, ...airingSeries];
-  const all = [
+  const streamableMovies = filterFamilySafeMedia(globalMovies);
+  const safeIndianMovies = filterFamilySafeMedia(indianMovies);
+  const allSeries = filterFamilySafeMedia([...topSeries, ...airingSeries]);
+  const safeTmdb = {
+    indianMovies: filterFamilySafeMedia(tmdb.indianMovies),
+    indianSeries: filterFamilySafeMedia(tmdb.indianSeries),
+    netflixMovies: filterFamilySafeMedia(tmdb.netflixMovies),
+    netflixSeries: filterFamilySafeMedia(tmdb.netflixSeries)
+  };
+  const safeNetflixGuides = filterFamilySafeMedia(CURATED_NETFLIX_GUIDES);
+  const all = filterFamilySafeMedia([
     ...streamableMovies,
     ...allSeries,
-    ...indianMovies,
-    ...CURATED_NETFLIX_GUIDES,
-    ...tmdb.indianMovies,
-    ...tmdb.indianSeries,
-    ...tmdb.netflixMovies,
-    ...tmdb.netflixSeries
-  ];
+    ...safeIndianMovies,
+    ...safeNetflixGuides,
+    ...safeTmdb.indianMovies,
+    ...safeTmdb.indianSeries,
+    ...safeTmdb.netflixMovies,
+    ...safeTmdb.netflixSeries
+  ]);
 
   const featured = streamableMovies[0] || allSeries[0] || null;
 
@@ -501,7 +513,7 @@ async function buildLiveCatalog() {
       id: "popular-tv-shows",
       title: "Popular TV Shows & Series Guide",
       subtitle: "Top-rated series with complete season and episode breakdown from TVMaze",
-      items: topSeries
+      items: filterFamilySafeMedia(topSeries)
     },
     {
       id: "trending-movies",
@@ -521,21 +533,21 @@ async function buildLiveCatalog() {
       id: "free-to-stream",
       title: "Indian Cinema Classics",
       subtitle: "Golden era Bollywood and regional cinema from Internet Archive",
-      items: indianMovies
+      items: safeIndianMovies
     },
     {
       id: "indian-series-today",
       title: "Series Airing Today",
       subtitle: "Live schedule data from TVMaze",
-      items: airingSeries
+      items: filterFamilySafeMedia(airingSeries)
     },
     ...(tmdb.configured ? [
-      { id: "popular-indian-movies", title: "Popular Indian Movies", subtitle: "Live TMDB India guide", items: tmdb.indianMovies },
-      { id: "popular-indian-series", title: "Popular Indian Series", subtitle: "Live TMDB India guide", items: tmdb.indianSeries },
-      { id: "netflix-movies-india", title: "Netflix Movies in India", subtitle: "Availability via TMDB / JustWatch", items: tmdb.netflixMovies },
-      { id: "netflix-series-india", title: "Netflix Series in India", subtitle: "Availability via TMDB / JustWatch", items: tmdb.netflixSeries }
+      { id: "popular-indian-movies", title: "Popular Indian Movies", subtitle: "Live TMDB India guide", items: safeTmdb.indianMovies },
+      { id: "popular-indian-series", title: "Popular Indian Series", subtitle: "Live TMDB India guide", items: safeTmdb.indianSeries },
+      { id: "netflix-movies-india", title: "Netflix Movies in India", subtitle: "Availability via TMDB / JustWatch", items: safeTmdb.netflixMovies },
+      { id: "netflix-series-india", title: "Netflix Series in India", subtitle: "Availability via TMDB / JustWatch", items: safeTmdb.netflixSeries }
     ] : []),
-    { id: "hindi-dubbed-netflix", title: "Hindi Dubbed on Netflix", subtitle: "Official India availability", items: CURATED_NETFLIX_GUIDES }
+    { id: "hindi-dubbed-netflix", title: "Hindi Dubbed on Netflix", subtitle: "Official India availability", items: safeNetflixGuides }
   ].filter((category) => category.items && category.items.length);
 
   return {
@@ -609,7 +621,7 @@ export async function searchLiveMedia(query, limit = 10) {
     return haystack.includes(lowerQ);
   });
 
-  return [...curatedResults, ...movies, ...tvResults, ...tmdbResults];
+  return filterFamilySafeMedia([...curatedResults, ...movies, ...tvResults, ...tmdbResults]);
 }
 
 export async function findLiveMedia(id) {

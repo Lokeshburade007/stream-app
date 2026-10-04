@@ -1,5 +1,6 @@
 import dns from "node:dns";
 dns.setDefaultResultOrder("ipv4first");
+import { filterFamilySafeMedia, isFamilySafeMedia } from "./contentPolicy.js";
 
 const ARCHIVE_ORIGIN = "https://archive.org";
 const TVMAZE_ORIGIN = "https://api.tvmaze.com";
@@ -234,7 +235,7 @@ function toTvMazeShow(show) {
   const year = yearMatch ? parseInt(yearMatch[0], 10) : 2024;
   const score = show.rating?.average ? Math.min(99, Math.round(show.rating.average * 10)) : 92;
 
-  return {
+  const media = {
     id: `tvmaze_${show.id}`,
     tvMazeId: show.id,
     title: cleanText(show.name, "Untitled Series"),
@@ -261,6 +262,7 @@ function toTvMazeShow(show) {
     playable: false,
     hasEpisodes: true
   };
+  return isFamilySafeMedia(media) ? media : null;
 }
 
 // Cache for top shows
@@ -280,9 +282,9 @@ export async function getTopTvSeries(limit = 24) {
       .map(toTvMazeShow)
       .filter(Boolean);
 
-    cachedTopSeries = sorted;
+    cachedTopSeries = filterFamilySafeMedia(sorted);
     topSeriesExpiresAt = Date.now() + 15 * 60 * 1000; // 15 mins cache
-    return sorted;
+    return cachedTopSeries;
   } catch (err) {
     console.warn("TVMaze top shows fetch error:", err.message);
     return [];
@@ -302,7 +304,7 @@ export async function getSeriesEpisodes(seriesId) {
       seasons: [
         {
           seasonNumber: 1,
-          episodes: classic.episodes
+          episodes: classic.episodes.filter(isFamilySafeMedia)
         }
       ]
     };
@@ -345,15 +347,17 @@ export async function getSeriesEpisodes(seriesId) {
       });
     });
 
-    const seasons = Array.from(seasonsMap.entries()).map(([seasonNumber, episodes]) => ({
-      seasonNumber,
-      episodes
-    }));
+    const seasons = Array.from(seasonsMap.entries())
+      .map(([seasonNumber, episodes]) => ({
+        seasonNumber,
+        episodes: episodes.filter(isFamilySafeMedia)
+      }))
+      .filter((season) => season.episodes.length);
 
     return {
       seriesId,
       playable: false,
-      totalEpisodes: rawEpisodes.length,
+      totalEpisodes: seasons.reduce((total, season) => total + season.episodes.length, 0),
       seasons
     };
   } catch (err) {
