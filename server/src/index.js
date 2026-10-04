@@ -40,6 +40,7 @@ const LIBRARY_QUOTA_BYTES = (Number.isFinite(configuredQuotaGb) && configuredQuo
 const MAX_UPLOAD_BYTES = Math.min(10 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * (2 / 3)));
 const TRANSCODE_HEADROOM_BYTES = Math.max(1024 * 1024 * 1024, Math.min(2 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * 0.1)));
 const HOST_CONFIG = (process.env.HOST_EMAIL || "buradepiyush@gmail.com").trim().toLowerCase();
+const HOST_EMAIL = HOST_CONFIG;
 const HOST_EMAILS = new Set([
   HOST_CONFIG,
   "buradepiyush@gmail.com",
