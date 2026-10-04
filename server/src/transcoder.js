@@ -223,7 +223,7 @@ export function isSupportedVideo(filename) {
 }
 
 export class MediaTranscoder {
-  constructor({ mediaRoot, publicBasePath = "/media/hls", quotaBytes = 15 * 1024 * 1024 * 1024, maxSourceBytes = 10 * 1024 * 1024 * 1024, transcodeHeadroomBytes = 5 * 1024 * 1024 * 1024 }) {
+  constructor({ mediaRoot, publicBasePath = "/media/hls", quotaBytes = 20 * 1024 * 1024 * 1024, maxSourceBytes = 10 * 1024 * 1024 * 1024, transcodeHeadroomBytes = 10 * 1024 * 1024 * 1024 }) {
     this.mediaRoot = mediaRoot;
     this.uploadRoot = path.join(mediaRoot, "uploads");
     this.hlsRoot = path.join(mediaRoot, "hls");
@@ -331,7 +331,7 @@ export class MediaTranscoder {
 
   getSourceLimit(stats) {
     // The HLS quota guard is applied separately during encoding. Do not deduct
-    // it here, so an empty 15 GB library can accept the advertised 10 GB file.
+    // it here, so an empty 20 GB library can accept the advertised 10 GB file.
     return Math.max(0, Math.min(this.maxSourceBytes, stats.availableBytes - this.transcodeHeadroomBytes));
   }
 

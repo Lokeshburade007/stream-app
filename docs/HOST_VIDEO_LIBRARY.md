@@ -27,7 +27,7 @@ Set these values in `server/.env`:
 HOST_EMAIL=buradepiyush@gmail.com
 
 # Total amount used by temporary source files and generated HLS files.
-VIDEO_STORAGE_QUOTA_GB=15
+VIDEO_STORAGE_QUOTA_GB=20
 ```
 
 `HOST_EMAIL` is case-insensitive, but it must match the email claim in the
@@ -39,14 +39,14 @@ development, `npm run dev` watches `.env` and `src/` and restarts automatically.
 The startup log confirms the effective settings:
 
 ```text
-🎞️  Video Library:        15 GB · Host buradepiyush@gmail.com
+🎞️  Video Library:        20 GB · Host buradepiyush@gmail.com
 ```
 
 ## Using the UI
 
 1. Sign in normally with the verified address configured in `HOST_EMAIL`.
 2. Select **Upload Video** in the navigation bar, or open the profile menu and
-   choose **Manage 15 GB Video Library**.
+   choose **Manage 20 GB Video Library**.
 3. Either select a supported file and choose **Upload and encode**, or paste a
    direct HTTPS video-file URL and choose **Download, encode, and add to library**.
 4. Keep the dialog open while the progress status moves through probing,
@@ -97,7 +97,7 @@ The worker does the following:
    The 2160p rendition preserves the 3840×2160 source detail; smaller files
    are never upscaled and presented as 4K.
 4. Watches the combined `uploads/` and `hls/` byte count while FFmpeg runs.
-   The encode is stopped before the 15 GB limit is crossed.
+   The encode is stopped before the 20 GB limit is crossed.
 5. Saves completed metadata to `library.json`, then removes the original
    source. The adaptive HLS package remains available for playback.
 
@@ -113,16 +113,16 @@ library title. Any space that cannot be attributed to a listed title appears as
 
 Only one import/encoding job runs at a time, but the library can retain multiple
 completed movies. This keeps the storage budget predictable while allowing the
-available 15 GB to be shared across titles.
+available 20 GB to be shared across titles.
 
 The input-file limit is calculated as the smaller of 10 GB and two-thirds of
-the total quota. With an empty 15 GB library, a source file may be up to 10 GB.
-The worker reserves the remaining 5 GB while the original and generated HLS
+the total quota. With an empty 20 GB library, a source file may be up to 10 GB.
+The worker reserves the remaining 10 GB while the original and generated HLS
 output coexist. As completed titles consume storage, the upload limit lowers
 automatically to preserve that encoding workspace.
 
 A 4K package uses materially more storage and CPU time than a 1080p package.
-The same 15 GB quota guard covers every HLS rendition, thumbnail, preview, and
+The same 20 GB quota guard covers every HLS rendition, thumbnail, preview, and
 temporary source. If a package needs more than the reserved workspace, the job
 stops cleanly before the quota is exceeded; delete an older title or upload a
 smaller authorized source before retrying.
@@ -171,7 +171,7 @@ and redirect chains are rejected.
 | `Only Lokesh (Host)...` or `This account is not the configured library host` | A stale backend was running or the token belongs to another account. Restart the backend, sign out/in, and verify `HOST_EMAIL` in `server/.env`. |
 | Upload controls are missing | The browser asked `/api/library/access` and the current token is not the configured host. Use normal verified sign-in; demo profiles cannot manage media. |
 | `EADDRINUSE` on port 5001 | Another backend already owns the port. Stop the old process, then start one backend with `npm run dev`. |
-| Upload is rejected as too large | Reduce the source to the live limit shown in the manager. It reaches 10 GB only when at least 15 GB is free for the source and HLS workspace. |
+| Upload is rejected as too large | Reduce the source to the live limit shown in the manager. It reaches 10 GB only when at least 20 GB is free for the source and HLS workspace. |
 | Storage is used but a video is missing from My Library | An interrupted job left an unlisted temporary source or HLS folder. The manager lists it under **Unlisted server files** with its size and an individual host-only Delete button. |
 | Video is not visible after restart | Confirm `server/media/hls/<job-id>/master.m3u8` and `server/media/library.json` still exist and the backend can read `server/media/`. |
 | Cross-device voice is unavailable | Browsers require HTTPS for microphone access outside `localhost`; configure HTTPS before using voice chat on phones or remote devices. |

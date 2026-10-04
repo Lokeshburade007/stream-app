@@ -33,11 +33,10 @@ const __dirname = path.dirname(__filename);
 const PORT = parseInt(process.env.PORT || "5001", 10);
 const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017/stream_hub";
 const MEDIA_ROOT = path.resolve(__dirname, "../media");
-const configuredQuotaGb = Number(process.env.VIDEO_STORAGE_QUOTA_GB || 15);
-const LIBRARY_QUOTA_BYTES = (Number.isFinite(configuredQuotaGb) && configuredQuotaGb > 0 ? configuredQuotaGb : 15) * 1024 * 1024 * 1024;
-// Keep one third of the configured library available while the original source
-// and its generated HLS package coexist. With the standard 15 GB quota, a
-// source can be up to 10 GB and 5 GB remains for the encode.
+const configuredQuotaGb = Number(process.env.VIDEO_STORAGE_QUOTA_GB || 20);
+const LIBRARY_QUOTA_BYTES = (Number.isFinite(configuredQuotaGb) && configuredQuotaGb > 0 ? configuredQuotaGb : 20) * 1024 * 1024 * 1024;
+// A source and its generated HLS package coexist during encoding. With the
+// standard 20 GB quota, the 10 GB source cap leaves 10 GB for the encode.
 const MAX_UPLOAD_BYTES = Math.min(10 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * (2 / 3)));
 const TRANSCODE_HEADROOM_BYTES = Math.max(1024 * 1024 * 1024, LIBRARY_QUOTA_BYTES - MAX_UPLOAD_BYTES);
 const HOST_EMAIL = (process.env.HOST_EMAIL || "buradepiyush@gmail.com").trim().toLowerCase();
