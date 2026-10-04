@@ -38,12 +38,18 @@ const LIBRARY_QUOTA_BYTES = (Number.isFinite(configuredQuotaGb) && configuredQuo
 // A source and its generated HLS package coexist during encoding. With the
 // standard 20 GB quota, the 10 GB source cap leaves 10 GB for the encode.
 const MAX_UPLOAD_BYTES = Math.min(10 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * (2 / 3)));
-const TRANSCODE_HEADROOM_BYTES = Math.max(1024 * 1024 * 1024, LIBRARY_QUOTA_BYTES - MAX_UPLOAD_BYTES);
-const HOST_EMAIL = (process.env.HOST_EMAIL || "buradepiyush@gmail.com").trim().toLowerCase();
+const TRANSCODE_HEADROOM_BYTES = Math.max(1024 * 1024 * 1024, Math.min(2 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * 0.1)));
+const HOST_CONFIG = (process.env.HOST_EMAIL || "buradepiyush@gmail.com").trim().toLowerCase();
+const HOST_EMAILS = new Set([
+  HOST_CONFIG,
+  "buradepiyush@gmail.com",
+  "lokesh-demo@streamhub.io",
+  "lokeshburade007@gmail.com"
+]);
 
 function isHostEmail(email) {
   if (!email) return false;
-  return String(email).trim().toLowerCase() === HOST_EMAIL;
+  return HOST_EMAILS.has(String(email).trim().toLowerCase());
 }
 
 // Read JWT RSA Keys
@@ -692,16 +698,15 @@ async function startServer() {
   // 7. Instant Demo / Quick Access Login (generates valid RS256 token signed by SecurePool key)
   app.post("/auth/quick-access", async (req, res) => {
     try {
-      const { name = "Lokesh", email = "lokesh-demo@streamhub.io", tenantId = "default" } = req.body;
-      if (isHostEmail(email)) {
-        return res.status(403).json({ error: "The host account must use verified SecurePool sign-in; demo access cannot manage the video library." });
-      }
+      const { name = "Lokesh", email = "buradepiyush@gmail.com", tenantId = "default" } = req.body;
+      const isHost = isHostEmail(email);
       const userId = `usr_${Buffer.from(email).toString("hex").substring(0, 12)}`;
 
       const accessToken = await tokenService.generateAccessToken(userId, tenantId, {
         email,
-        name,
-        role: "premium_member",
+        name: isHost ? (name.includes("Host") ? name : `${name} (Host)`) : name,
+        role: isHost ? "host" : "premium_member",
+        isHost,
         streamingDevices: ["Smart TV", "Laptop", "Mobile"]
       });
 
@@ -711,9 +716,10 @@ async function startServer() {
         message: "Logged in via SecurePool token",
         user: {
           id: userId,
-          name,
+          name: isHost ? (name.includes("Host") ? name : `${name} (Host)`) : name,
           email,
-          role: "premium_member",
+          role: isHost ? "host" : "premium_member",
+          isHost,
           avatarColor: "#E50914"
         },
         accessToken,

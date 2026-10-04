@@ -223,7 +223,7 @@ export function isSupportedVideo(filename) {
 }
 
 export class MediaTranscoder {
-  constructor({ mediaRoot, publicBasePath = "/media/hls", quotaBytes = 20 * 1024 * 1024 * 1024, maxSourceBytes = 10 * 1024 * 1024 * 1024, transcodeHeadroomBytes = 10 * 1024 * 1024 * 1024 }) {
+  constructor({ mediaRoot, publicBasePath = "/media/hls", quotaBytes = 20 * 1024 * 1024 * 1024, maxSourceBytes = 10 * 1024 * 1024 * 1024, transcodeHeadroomBytes = 1 * 1024 * 1024 * 1024 }) {
     this.mediaRoot = mediaRoot;
     this.uploadRoot = path.join(mediaRoot, "uploads");
     this.hlsRoot = path.join(mediaRoot, "hls");
