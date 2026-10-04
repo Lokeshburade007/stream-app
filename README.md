@@ -208,32 +208,37 @@ manager. Full behavior and authenticated API examples are in
 
 ## 🌐 Deploying to Oracle Cloud VPS
 
-1. **Setup Oracle Linux / Ubuntu VPS**:
-   ```bash
-   sudo apt update && sudo apt install -y nodejs npm git mongodb-org
-   npm install -g pm2
-   ```
+The repository includes PM2 configuration and two deployment scripts for both
+services. They preserve `server/.env`, RSA keys, and the uploaded-video media
+directory on every deploy.
 
-2. **Clone & Build**:
-   ```bash
-   git clone https://github.com/Lokeshburade007/stream-app.git
-   cd stream-app/server && npm install
-   cd ../client && npm install && npm run build
-   ```
+One-time VPS setup:
 
-3. **Start with PM2**:
-   ```bash
-   # Start backend
-   cd ../server
-   pm2 start src/index.js --name "streamhub-backend"
+```bash
+sudo apt update
+sudo apt install -y git curl
+npm install -g pm2
+git clone https://github.com/Lokeshburade007/stream-app.git /home/ubuntu/stream-app
+cd /home/ubuntu/stream-app
+cp server/.env.example server/.env
+# Configure server/.env, then add server/private.pem and server/public.pem.
+bash deploy.sh
+```
 
-   # Start frontend
-   cd ../client
-   pm2 start npm --name "streamhub-frontend" -- start
-   ```
+For later deployments from your development computer, using the existing SSH
+alias from this project:
 
-4. **Nginx Reverse Proxy**:
-   Configure Nginx with WebSocket support (`Upgrade $http_upgrade`, `Connection "Upgrade"`) and proxy pass port 3000 for frontend and port 5001 for `/api` and `/socket.io`.
+```bash
+bash scripts/deploy-vps.sh lokesh007
+```
+
+Set `STREAMHUB_REMOTE_DIR=/your/path` if your VPS clone is not located at
+`/home/ubuntu/stream-app`. The script syncs source files, runs `deploy.sh` on
+the VPS, rebuilds the frontend, reloads both `stream-server` and
+`stream-client`, saves the PM2 process list, and checks `/health`.
+
+Nginx should proxy `/` to port 3000 and `/api`, `/auth`, `/docs`, `/media`, and
+`/socket.io` to port 5001 with WebSocket upgrade headers.
 
 ---
 
