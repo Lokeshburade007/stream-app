@@ -86,7 +86,9 @@ export default function CinemaPlayer({
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(Boolean(watchPartyRoom));
+  // Start closed for a stable first paint. Desktop opens the lounge after mount;
+  // phones keep the film visible until the viewer explicitly opens Party Chat.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState(watchPartyRoom?.messages || []);
   const [newMessage, setNewMessage] = useState("");
   const [participants, setParticipants] = useState(watchPartyRoom?.participants || []);
@@ -110,6 +112,17 @@ export default function CinemaPlayer({
   const [voiceError, setVoiceError] = useState("");
 
   const hideControlsTimer = useRef(null);
+
+  useEffect(() => {
+    const desktopQuery = window.matchMedia("(min-width: 769px)");
+    const updateSidebarForViewport = () => setSidebarOpen(Boolean(watchPartyRoom) && desktopQuery.matches);
+    const initialViewportUpdate = window.setTimeout(updateSidebarForViewport, 0);
+    if (watchPartyRoom) desktopQuery.addEventListener("change", updateSidebarForViewport);
+    return () => {
+      window.clearTimeout(initialViewportUpdate);
+      desktopQuery.removeEventListener("change", updateSidebarForViewport);
+    };
+  }, [watchPartyRoom]);
 
   // 1. Initialize Video stream URL
   const primaryVideoSrc = resolveMediaUrl(movie?.videoSource) || apiUrl(`/api/media/stream/${movie?.id || "sample-teaser"}`);
@@ -703,7 +716,7 @@ export default function CinemaPlayer({
       <div style={{ flex: 1, position: "relative", display: "flex", flexDirection: "column", background: "#000" }}>
         {/* Top Header Bar */}
         <div className={`player-header ${!showControls ? "hidden-controls" : ""}`}>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div className="player-header-left">
             <button
               id="player-btn-back"
               className="back-btn"
@@ -712,14 +725,15 @@ export default function CinemaPlayer({
             >
               <ArrowLeft size={18} /> Back
             </button>
-            <h2 style={{ fontSize: "18px", fontWeight: 700 }}>{movie?.title}</h2>
+            <h2 className="player-title">{movie?.title}</h2>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div className="player-header-actions">
             {watchPartyRoom && (
               <button
                 id="btn-sync-host"
                 onClick={requestHostSync}
+                className="sync-host-button"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -741,7 +755,10 @@ export default function CinemaPlayer({
             {watchPartyRoom && (
               <button
                 id="btn-toggle-sidebar"
-                onClick={() => setSidebarOpen(!sidebarOpen)}
+                onClick={() => setSidebarOpen((open) => !open)}
+                aria-expanded={sidebarOpen}
+                aria-controls="watch-party-sidebar"
+                className="party-sidebar-toggle"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -757,7 +774,7 @@ export default function CinemaPlayer({
                 }}
               >
                 <Users size={16} />
-                <span>Party Chat ({participants.length})</span>
+                <span className="party-sidebar-toggle-label">Party Chat ({participants.length})</span>
               </button>
             )}
           </div>
@@ -1002,6 +1019,14 @@ export default function CinemaPlayer({
       {watchPartyRoom && sidebarOpen && (
         <aside className="party-sidebar" id="watch-party-sidebar">
           <div className="sidebar-header">
+            <button
+              type="button"
+              className="mobile-party-back"
+              onClick={() => setSidebarOpen(false)}
+              aria-label="Back to video"
+            >
+              <ArrowLeft size={18} /> Back to video
+            </button>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="room-badge">{watchPartyRoom.code}</span>

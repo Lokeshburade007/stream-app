@@ -13,35 +13,45 @@ export default function InfoModal({ movie, isOpen, onClose, onPlay, onStartWatch
   const canPlay = movie?.playable !== false;
 
   useEffect(() => {
+    let isMounted = true;
+    let requestTimer;
+
     if (!isOpen || !movie || !isSeries) {
-      setEpisodesData(null);
-      return;
+      requestTimer = window.setTimeout(() => {
+        if (isMounted) setEpisodesData(null);
+      }, 0);
+      return () => {
+        isMounted = false;
+        window.clearTimeout(requestTimer);
+      };
     }
 
-    let isMounted = true;
-    setIsLoadingEpisodes(true);
-
-    fetch(apiUrl(`/api/series/${encodeURIComponent(movie.id)}/episodes`))
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed to load episodes");
-        return res.json();
-      })
-      .then((data) => {
-        if (!isMounted) return;
-        setEpisodesData(data);
-        if (data.seasons && data.seasons.length > 0) {
-          setSelectedSeason(data.seasons[0].seasonNumber);
-        }
-      })
-      .catch((err) => {
-        console.warn("Could not load episodes:", err.message);
-      })
-      .finally(() => {
-        if (isMounted) setIsLoadingEpisodes(false);
-      });
+    requestTimer = window.setTimeout(() => {
+      if (!isMounted) return;
+      setIsLoadingEpisodes(true);
+      fetch(apiUrl(`/api/series/${encodeURIComponent(movie.id)}/episodes`))
+        .then((res) => {
+          if (!res.ok) throw new Error("Failed to load episodes");
+          return res.json();
+        })
+        .then((data) => {
+          if (!isMounted) return;
+          setEpisodesData(data);
+          if (data.seasons && data.seasons.length > 0) {
+            setSelectedSeason(data.seasons[0].seasonNumber);
+          }
+        })
+        .catch((err) => {
+          console.warn("Could not load episodes:", err.message);
+        })
+        .finally(() => {
+          if (isMounted) setIsLoadingEpisodes(false);
+        });
+    }, 0);
 
     return () => {
       isMounted = false;
+      window.clearTimeout(requestTimer);
     };
   }, [isOpen, movie, isSeries]);
 

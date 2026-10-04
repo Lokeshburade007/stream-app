@@ -19,6 +19,10 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
   - Uploads MP4, MKV, MOV, M4V, and WebM into source-aware adaptive HLS (`.m3u8`) ladders at 360p, 720p, 1080p, and genuine 4K/2160p when the uploaded source supports it.
   - Produces a preview clip, subtitle and chapter VTT files, plus a storyboard sprite for scrub-hover previews.
   - Uses hls.js for adaptive browser playback, manual quality selection, and available audio/subtitle tracks.
+- **Mobile Watch Party & PWA**:
+  - On phones, the movie remains the primary screen. Party Chat opens as a full-screen lounge with voice controls and a **Back to video** button.
+  - Includes an installable web-app manifest for a standalone StreamHub home-screen experience.
+  - Mobile microphone access and PWA installation require the production site to be served over HTTPS.
 - **Host-only 20 GB Personal Video Library**:
   - A verified SecurePool host uploads one authorized source video, which is packaged as adaptive HLS for solo playback and Watch Parties.
   - Multiple titles can share the strict storage cap. The host may upload a local source or import an authorized direct HTTPS video URL; originals are removed after a successful encode.

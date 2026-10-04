@@ -34,8 +34,12 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
       if (data.activeJob) {
         setJob(data.activeJob);
         window.setTimeout(() => pollJob(data.activeJob.id), 0);
-      } else if (job && ["completed", "failed", "cancelled"].includes(job.status)) {
-        setJob(null);
+      } else {
+        setJob((currentJob) => (
+          ["completed", "failed", "cancelled"].includes(currentJob?.status)
+            ? null
+            : currentJob
+        ));
       }
       setError("");
     } catch (requestError) {
@@ -47,8 +51,11 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
 
   useEffect(() => {
     if (!isOpen) {
-      setPendingConfirm(null);
-      return () => window.clearInterval(pollTimer.current);
+      const resetConfirmation = window.setTimeout(() => setPendingConfirm(null), 0);
+      return () => {
+        window.clearTimeout(resetConfirmation);
+        window.clearInterval(pollTimer.current);
+      };
     }
     const initialRequest = window.setTimeout(() => { void loadLibrary(); }, 0);
     return () => {
@@ -57,7 +64,7 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
     };
   }, [isOpen, loadLibrary]);
 
-  const pollJob = (jobId) => {
+  function pollJob(jobId) {
     window.clearInterval(pollTimer.current);
     pollTimer.current = window.setInterval(async () => {
       try {
@@ -86,7 +93,7 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
         setError(requestError.message);
       }
     }, 1500);
-  };
+  }
 
   const uploadMovie = async (event) => {
     event.preventDefault();
@@ -203,15 +210,23 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
         }
       }}
     >
-      <div className="modal-card" style={{ maxWidth: 620 }} onClick={(event) => event.stopPropagation()}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div
+        className="modal-card library-manager-modal"
+        style={{ maxWidth: 620 }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="library-manager-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="library-modal-header">
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ width: 38, height: 38, borderRadius: "50%", background: "rgba(70,211,105,.15)", display: "grid", placeItems: "center" }}><HardDrive size={20} color="#46d369" /></div>
-            <div><h2 className="modal-title">Lokesh’s Video Library</h2><p style={{ fontSize: 12, color: "#888" }}>Host-only upload and deletion controls</p></div>
+            <div><h2 id="library-manager-title" className="modal-title">Lokesh’s Video Library</h2><p style={{ fontSize: 12, color: "#888" }}>Host-only upload and deletion controls</p></div>
           </div>
           <button onClick={onClose} className="icon-btn" aria-label="Close library modal"><X size={20} /></button>
         </div>
 
+        <div className="library-modal-scroll">
         {storage && (
           <div style={{ background: "rgba(255,255,255,.05)", borderRadius: 8, padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}><strong>Server storage</strong><span>{formatBytes(storage.usedBytes)} / {formatBytes(storage.quotaBytes)}</span></div>
@@ -433,7 +448,8 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
           </div>
         )}
 
-        <button type="button" onClick={loadLibrary} disabled={loading} style={{ background: "none", color: "#aaa", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12 }}><RefreshCw size={13} /> Refresh library status</button>
+          <button type="button" onClick={loadLibrary} disabled={loading} style={{ background: "none", color: "#aaa", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12 }}><RefreshCw size={13} /> Refresh library status</button>
+        </div>
       </div>
     </div>
   );
