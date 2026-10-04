@@ -466,7 +466,11 @@ export class MediaTranscoder {
   cancelJob(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) return null;
-    if (isTerminalJob(job)) return this.serializeJob(job);
+    if (isTerminalJob(job)) {
+      void this.cleanupJob(job);
+      this.jobs.delete(jobId);
+      return this.serializeJob(job);
+    }
     job.cancelled = true;
     this.updateJob(job, { status: "cancelling", error: null });
     job.abortController?.abort();
@@ -628,11 +632,11 @@ export class MediaTranscoder {
     await ensureDirectory(path.join(job.outputDirectory, "subtitles"));
 
     this.updateJob(job, { status: "creating preview", progress: Math.max(job.progress, 10) });
-    await this.createPreview(job.inputPath, path.join(job.outputDirectory, "preview.mp4"));
+    await this.createPreview(job, path.join(job.outputDirectory, "preview.mp4"));
     this.throwIfCancelled(job);
 
     this.updateJob(job, { status: "creating poster thumbnail", progress: Math.max(job.progress, 15) });
-    const posterCreated = await this.createPoster(job.inputPath, path.join(job.outputDirectory, "poster.jpg"), duration);
+    const posterCreated = await this.createPoster(job, path.join(job.outputDirectory, "poster.jpg"), duration);
     this.throwIfCancelled(job);
 
     this.updateJob(job, { status: "creating HLS variants", progress: Math.max(job.progress, 20) });
@@ -689,30 +693,36 @@ export class MediaTranscoder {
     await fsp.unlink(job.inputPath).catch(() => {});
   }
 
-  async createPreview(inputPath, outputPath) {
-    await this.runWithQuotaGuard(
-      ffmpeg(inputPath)
-        .setStartTime(0)
-        .duration(10)
-        .outputOptions(["-c:v libx264", "-c:a aac", "-movflags +faststart"])
-        .output(outputPath)
-    );
+  async createPreview(job, outputPath) {
+    const command = ffmpeg(job.inputPath)
+      .setStartTime(0)
+      .duration(10)
+      .outputOptions(["-c:v libx264", "-c:a aac", "-movflags +faststart"])
+      .output(outputPath);
+    job.activeCommand = command;
+    try {
+      await this.runWithQuotaGuard(command);
+    } finally {
+      job.activeCommand = null;
+    }
   }
 
-  async createPoster(inputPath, outputPath, duration) {
+  async createPoster(job, outputPath, duration) {
     const frameAt = duration > 2 ? Math.min(Math.max(1, duration * 0.1), duration - 0.25) : 0;
+    const command = ffmpeg(job.inputPath)
+      .setStartTime(frameAt)
+      .outputOptions(["-frames:v 1", "-vf", "scale='min(1280,iw)':-2", "-q:v 3"])
+      .output(outputPath);
+    job.activeCommand = command;
     try {
-      await this.runWithQuotaGuard(
-        ffmpeg(inputPath)
-          .setStartTime(frameAt)
-          .outputOptions(["-frames:v 1", "-vf", "scale='min(1280,iw)':-2", "-q:v 3"])
-          .output(outputPath)
-      );
+      await this.runWithQuotaGuard(command);
       return true;
     } catch (error) {
       console.warn("Unable to create library poster thumbnail:", error.message);
       await fsp.unlink(outputPath).catch(() => {});
       return false;
+    } finally {
+      job.activeCommand = null;
     }
   }
 
@@ -788,16 +798,20 @@ export class MediaTranscoder {
     const spritePath = path.join(job.outputDirectory, "thumbnails.jpg");
     const vttPath = path.join(job.outputDirectory, "thumbnails.vtt");
 
-    await runFfmpeg(
-      ffmpeg(job.inputPath)
-        .duration(Math.min(duration, interval * maxFrames))
-        .outputOptions([
-          "-vf", `fps=1/${interval},scale=${thumbWidth}:${thumbHeight},tile=${columns}x${rows}:padding=2:margin=0`,
-          "-frames:v 1",
-          "-q:v 3"
-        ])
-        .output(spritePath)
-    );
+    const command = ffmpeg(job.inputPath)
+      .duration(Math.min(duration, interval * maxFrames))
+      .outputOptions([
+        "-vf", `fps=1/${interval},scale=${thumbWidth}:${thumbHeight},tile=${columns}x${rows}:padding=2:margin=0`,
+        "-frames:v 1",
+        "-q:v 3"
+      ])
+      .output(spritePath);
+    job.activeCommand = command;
+    try {
+      await runFfmpeg(command);
+    } finally {
+      job.activeCommand = null;
+    }
 
     const frames = Math.min(maxFrames, Math.max(1, Math.ceil(duration / interval)));
     const cues = Array.from({ length: frames }, (_, index) => {

@@ -404,8 +404,9 @@ async function startServer() {
   });
 
   app.delete("/api/library/:mediaId", requireHost, async (req, res) => {
-    if (transcoder.hasActiveJob()) {
-      return res.status(409).json({ error: "Wait for the current encoding job to finish before deleting the library movie." });
+    const activeJob = transcoder.getActiveJob();
+    if (activeJob && req.params.mediaId === `local_${activeJob.id}`) {
+      return res.status(409).json({ error: "This video is currently being processed. Click 'Cancel & delete job' to stop and delete it." });
     }
     try {
       const deleted = await transcoder.deleteMedia(req.params.mediaId);
