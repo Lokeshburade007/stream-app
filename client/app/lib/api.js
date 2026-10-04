@@ -15,3 +15,11 @@ export const APP_URL = (process.env.NEXT_PUBLIC_APP_URL || (
 export function apiUrl(path) {
   return `${API_URL}${path.startsWith("/") ? path : `/${path}`}`;
 }
+
+export function mediaUrl(path) {
+  if (!path) return "";
+  if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("data:") || path.startsWith("blob:")) {
+    return path;
+  }
+  return apiUrl(path);
+}

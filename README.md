@@ -16,12 +16,12 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
   - Smart TV Remote D-Pad Navigation mode with enlarged focus indicators.
 - **Ultra-Low Latency Video Streaming Engine**:
   - Implements **HTTP 206 Partial Content** byte-range requests for instant scrubbing and zero-lag playback on Smart TV, Laptop, and Mobile browsers.
-  - Uploads MP4, MKV, MOV, M4V, and WebM into adaptive HLS (`.m3u8`) ladders at 360p, 720p, and 1080p.
+  - Uploads MP4, MKV, MOV, M4V, and WebM into source-aware adaptive HLS (`.m3u8`) ladders at 360p, 720p, 1080p, and genuine 4K/2160p when the uploaded source supports it.
   - Produces a preview clip, subtitle and chapter VTT files, plus a storyboard sprite for scrub-hover previews.
   - Uses hls.js for adaptive browser playback, manual quality selection, and available audio/subtitle tracks.
-- **Host-only 10 GB Personal Video Library**:
+- **Host-only 15 GB Personal Video Library**:
   - A verified SecurePool host uploads one authorized source video, which is packaged as adaptive HLS for solo playback and Watch Parties.
-  - Storage is strictly capped across temporary uploads and generated HLS files; the original source is removed after a successful encode.
+  - Multiple titles can share the strict storage cap. The host may upload a local source or import an authorized direct HTTPS video URL; originals are removed after a successful encode.
   - See [Host Video Library](docs/HOST_VIDEO_LIBRARY.md) for configuration, UI usage, APIs, storage logic, and troubleshooting.
 - **Free Movies Streaming API & Metadata**:
   - Integrated with the **Internet Archive Open Feature Films API** and Open Cinema projects.
@@ -75,7 +75,7 @@ Integrated with the **Internet Archive Open Movies API** for streaming free feat
 ### 8. Live Production Deployment on Oracle Cloud VPS
 ![Live Production Deployment](docs/screenshots/07_remote_deployment.png)
 
-### 9. Host-Only 10 GB Personal Video Library Manager
+### 9. Host-Only 15 GB Personal Video Library Manager
 ![Host Video Library Modal](docs/screenshots/09_host_library_modal.png)
 
 ---
@@ -188,6 +188,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | `GET` | `/api/library/access` | Returns whether the signed-in user can manage the host video library |
 | `GET` | `/api/library` | Host-only quota, storage usage, and completed personal-library metadata |
 | `POST` | `/api/media/upload` | Host-only upload of a `video` multipart field and start background HLS encoding |
+| `POST` | `/api/media/import-url` | Host-only server-side import of an authorized direct HTTPS video file URL |
 | `GET` | `/api/media/uploads/:jobId` | Retrieve HLS encoding job status and completed media metadata |
 | `DELETE` | `/api/library/:mediaId` | Host-only deletion of a completed personal-library title and its HLS files |
 | `GET` | `/api/movies/free` | Curated free streaming movies list |

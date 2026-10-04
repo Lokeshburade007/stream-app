@@ -217,7 +217,7 @@ export default function Navbar({
                     textAlign: "left"
                   }}
                 >
-                  <HardDrive size={15} /> {isHost ? "Manage 10 GB Video Library" : "View Video Library"}
+                  <HardDrive size={15} /> {isHost ? "Manage 15 GB Video Library" : "View Video Library"}
                 </button>
 
                 <button

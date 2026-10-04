@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { HardDrive, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import { Download, HardDrive, Link, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { apiUrl } from "../lib/api";
 
 function formatBytes(bytes = 0) {
@@ -12,6 +12,7 @@ function formatBytes(bytes = 0) {
 export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibraryChanged }) {
   const [library, setLibrary] = useState(null);
   const [file, setFile] = useState(null);
+  const [remoteUrl, setRemoteUrl] = useState("");
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -58,6 +59,7 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
           window.clearInterval(pollTimer.current);
           if (nextJob.status === "completed") {
             setFile(null);
+            setRemoteUrl("");
             await loadLibrary();
             onLibraryChanged?.();
           }
@@ -107,10 +109,32 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
     }
   };
 
+  const importFromUrl = async (event) => {
+    event.preventDefault();
+    if (!remoteUrl.trim()) return setError("Paste a direct HTTPS video file URL first.");
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(apiUrl("/api/media/import-url"), {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ url: remoteUrl.trim() })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "URL import was rejected");
+      setJob(data.job);
+      pollJob(data.job.id);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (!isOpen) return null;
   const storage = library?.storage;
   const media = library?.media || [];
-  const canUpload = library && !storage?.mediaCount && !storage?.activeJob && (!job || job.status === "failed");
+  const canUpload = library && !storage?.activeJob && library.maxUploadBytes >= 1024 * 1024 && (!job || job.status === "failed");
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -127,7 +151,7 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
           <div style={{ background: "rgba(255,255,255,.05)", borderRadius: 8, padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}><strong>Server storage</strong><span>{formatBytes(storage.usedBytes)} / {formatBytes(storage.quotaBytes)}</span></div>
             <div style={{ height: 8, background: "#333", borderRadius: 999 }}><div style={{ height: "100%", width: `${Math.min(100, storage.usedBytes / storage.quotaBytes * 100)}%`, background: storage.usedBytes / storage.quotaBytes > .85 ? "#ef4444" : "#46d369", borderRadius: 999 }} /></div>
-            <p style={{ fontSize: 12, color: "#aaa", marginTop: 9 }}>One movie at a time. Original uploads are removed after encoding; HLS playback files remain within the 10 GB quota.</p>
+            <p style={{ fontSize: 12, color: "#aaa", marginTop: 9 }}>Keep multiple movies until this shared quota is full. Original sources are removed after encoding; adaptive HLS files remain for playback.</p>
           </div>
         )}
 
@@ -137,7 +161,20 @@ export default function LibraryManagerModal({ isOpen, onClose, authToken, onLibr
 
         {media.map((item) => <div key={item.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, border: "1px solid rgba(255,255,255,.1)", padding: 12, borderRadius: 8 }}><div><strong>{item.title}</strong><div style={{ color: "#aaa", fontSize: 12, marginTop: 3 }}>{item.durationFormatted} · Adaptive HLS ready</div></div><button type="button" onClick={() => deleteMovie(item.id)} disabled={loading} style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "rgba(239,68,68,.15)", color: "#fca5a5", border: "1px solid #ef4444", borderRadius: 6, padding: "7px 9px", cursor: "pointer" }}><Trash2 size={15} /> Delete</button></div>)}
 
-        {canUpload && <form onSubmit={uploadMovie} style={{ display: "flex", flexDirection: "column", gap: 10 }}><label style={{ fontSize: 13, color: "#ddd" }}>Upload new movie <span style={{ color: "#aaa", fontWeight: 400 }}>(source up to {formatBytes(library.maxUploadBytes)})</span><input type="file" accept="video/mp4,video/x-matroska,video/quicktime,video/webm,video/x-m4v" onChange={(event) => setFile(event.target.files?.[0] || null)} style={{ display: "block", marginTop: 7, width: "100%" }} /></label>{file && <span style={{ fontSize: 12, color: "#aaa" }}>{file.name} · {formatBytes(file.size)}</span>}<button type="submit" disabled={loading} className="btn-party" style={{ justifyContent: "center" }}><Upload size={16} /> Upload and encode</button></form>}
+        {canUpload && <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <form onSubmit={uploadMovie} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <label style={{ fontSize: 13, color: "#ddd" }}>Upload from your device <span style={{ color: "#aaa", fontWeight: 400 }}>(source up to {formatBytes(library.maxUploadBytes)})</span><input type="file" accept="video/mp4,video/x-matroska,video/quicktime,video/webm,video/x-m4v" onChange={(event) => setFile(event.target.files?.[0] || null)} style={{ display: "block", marginTop: 7, width: "100%" }} /></label>
+            {file && <span style={{ fontSize: 12, color: "#aaa" }}>{file.name} · {formatBytes(file.size)}</span>}
+            <button type="submit" disabled={loading} className="btn-party" style={{ justifyContent: "center" }}><Upload size={16} /> Upload and encode</button>
+          </form>
+
+          <form onSubmit={importFromUrl} style={{ display: "flex", flexDirection: "column", gap: 9, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,.12)" }}>
+            <label htmlFor="library-video-url" style={{ fontSize: 13, color: "#ddd", display: "flex", alignItems: "center", gap: 6 }}><Link size={15} /> Download from a direct video URL</label>
+            <input id="library-video-url" type="url" value={remoteUrl} onChange={(event) => setRemoteUrl(event.target.value)} placeholder="https://…/video.mp4" style={{ width: "100%", padding: "10px 12px", background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.16)", borderRadius: 6, color: "#fff", outline: "none" }} />
+            <p style={{ margin: 0, fontSize: 11, color: "#aaa" }}>Use a direct HTTPS video file URL for content you own or are authorized to store. The server validates redirects and downloads it within the remaining library space.</p>
+            <button type="submit" disabled={loading || !remoteUrl.trim()} className="btn-party" style={{ justifyContent: "center" }}><Download size={16} /> Download, encode, and add to library</button>
+          </form>
+        </div>}
 
         <button type="button" onClick={loadLibrary} disabled={loading} style={{ background: "none", color: "#aaa", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12 }}><RefreshCw size={13} /> Refresh library status</button>
       </div>

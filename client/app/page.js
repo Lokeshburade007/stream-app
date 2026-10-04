@@ -11,7 +11,7 @@ import InfoModal from "./components/InfoModal";
 import LibraryManagerModal from "./components/LibraryManagerModal";
 import { Users, Film, Radio, Shield, Server, RefreshCw } from "lucide-react";
 import { io } from "socket.io-client";
-import { API_URL, apiUrl } from "./lib/api";
+import { API_URL, apiUrl, mediaUrl } from "./lib/api";
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -334,7 +334,7 @@ export default function Home() {
                     style={{
                       flex: "none",
                       height: 160,
-                      backgroundImage: `url(${movie.backdrop || movie.poster})`,
+                      backgroundImage: `url(${mediaUrl(movie.backdrop || movie.poster)})`,
                       border: isOnline ? "1px solid rgba(0, 128, 255, 0.4)" : "1px solid rgba(255, 255, 255, 0.08)"
                     }}
                     onClick={() => handlePlayMovie(movie)}
@@ -388,7 +388,7 @@ export default function Home() {
                   key={r.code}
                   className="movie-card"
                   style={{
-                    backgroundImage: `url(${r.mediaBackdrop || "/backdrops/cyber_amsterdam.jpg"})`,
+                    backgroundImage: `url(${mediaUrl(r.mediaBackdrop) || "/backdrops/cyber_amsterdam.jpg"})`,
                     border: "1px solid #E50914"
                   }}
                   onClick={() => handleJoinRoom(r.code)}

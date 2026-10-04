@@ -1,6 +1,7 @@
 "use client";
 
 import { Play, Users, Info } from "lucide-react";
+import { mediaUrl } from "../lib/api";
 
 export default function MovieRow({
   id,
@@ -33,7 +34,7 @@ export default function MovieRow({
               id={`card-${movie.id}`}
               className="movie-card"
               style={{
-                backgroundImage: `url(${movie.backdrop || movie.poster})`
+                backgroundImage: `url(${mediaUrl(movie.backdrop || movie.poster)})`
               }}
               onClick={() => (canPlay ? onPlay(movie) : onOpenInfo(movie))}
             >

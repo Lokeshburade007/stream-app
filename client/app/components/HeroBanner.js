@@ -2,6 +2,7 @@
 
 import { Play, Users, Info, Volume2, VolumeX } from "lucide-react";
 import { useState } from "react";
+import { mediaUrl } from "../lib/api";
 
 export default function HeroBanner({ movie, onPlay, onStartWatchParty, onOpenInfo }) {
   if (!movie) return null;
@@ -11,7 +12,7 @@ export default function HeroBanner({ movie, onPlay, onStartWatchParty, onOpenInf
       id="featured"
       className="hero-container"
       style={{
-        backgroundImage: `url(${movie.backdrop})`,
+        backgroundImage: `url(${mediaUrl(movie.backdrop)})`,
       }}
     >
       <div className="hero-vignette" />

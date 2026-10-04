@@ -1,6 +1,10 @@
 import crypto from "crypto";
+import { lookup } from "node:dns/promises";
 import fs from "fs";
+import net from "node:net";
 import path from "path";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import ffprobeInstaller from "@ffprobe-installer/ffprobe";
@@ -10,11 +14,15 @@ const fsp = fs.promises;
 const QUALITY_LADDER = [
   { id: "360p", width: 640, height: 360, bitrate: 800, maxrate: 856, buffer: 1200 },
   { id: "720p", width: 1280, height: 720, bitrate: 2500, maxrate: 2675, buffer: 3750 },
-  { id: "1080p", width: 1920, height: 1080, bitrate: 5000, maxrate: 5350, buffer: 7500 }
+  { id: "1080p", width: 1920, height: 1080, bitrate: 5000, maxrate: 5350, buffer: 7500 },
+  // This is a real 3840×2160 rendition, not an upscaled label. It is added
+  // only when the source has a 4K-capable dimension.
+  { id: "2160p", width: 3840, height: 2160, bitrate: 16000, maxrate: 17120, buffer: 24000 }
 ];
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mkv", ".mov", ".webm", ".m4v"]);
 const QUOTA_GUARD_BYTES = 32 * 1024 * 1024;
+const MAX_REDIRECTS = 3;
 
 if (ffmpegInstaller?.path) {
   ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -31,6 +39,20 @@ function clamp(value, min, max) {
 function asNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function getHlsQualityLadder(sourceWidth, sourceHeight) {
+  const width = asNumber(sourceWidth);
+  const height = asNumber(sourceHeight);
+  const selected = QUALITY_LADDER.filter((quality) => {
+    if (quality.id === "360p") return true;
+    // A wide cinematic 4K source can be shorter than 2160 pixels, while a
+    // vertical 4K source can be narrower than 3840. Either dimension is a
+    // valid indicator that this rendition will not invent extra detail.
+    return width >= quality.width || height >= quality.height;
+  });
+
+  return selected.length ? selected : [QUALITY_LADDER[0]];
 }
 
 function formatDuration(seconds) {
@@ -66,6 +88,82 @@ function metadataYear(tags = {}) {
   const candidate = metadataText(tags.date || tags.year || tags.creation_time);
   const match = candidate.match(/\b(19|20)\d{2}\b/);
   return match ? Number(match[0]) : new Date().getFullYear();
+}
+
+function isPrivateAddress(address) {
+  if (net.isIPv4(address)) {
+    const [first, second] = address.split(".").map(Number);
+    return first === 0 || first === 10 || first === 127 || first >= 224 ||
+      (first === 100 && second >= 64 && second <= 127) ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      (first === 198 && (second === 18 || second === 19));
+  }
+
+  if (net.isIPv6(address)) {
+    const normalized = address.toLowerCase();
+    if (normalized === "::" || normalized === "::1" || normalized.startsWith("fe8") ||
+      normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") ||
+      normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
+    const mappedV4 = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    return Boolean(mappedV4 && isPrivateAddress(mappedV4[1]));
+  }
+
+  return true;
+}
+
+async function validateRemoteUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("Enter a valid direct HTTPS video URL");
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || (parsed.port && parsed.port !== "443")) {
+    throw new Error("Only public HTTPS video download URLs on port 443 are allowed");
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
+    throw new Error("Private or local download URLs are not allowed");
+  }
+  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some(({ address }) => isPrivateAddress(address))) {
+    throw new Error("The download URL must resolve only to a public internet address");
+  }
+  return parsed;
+}
+
+function filenameFromRemoteUrl(url, contentDisposition) {
+  const dispositionName = contentDisposition?.match(/filename\*?=(?:UTF-8''|"?)([^";]+)/i)?.[1];
+  const candidate = dispositionName ? decodeURIComponent(dispositionName).replace(/[\\/]/g, " ") : path.basename(url.pathname);
+  const safe = candidate.replace(/[^a-zA-Z0-9._() -]/g, " ").trim();
+  return isSupportedVideo(safe) ? safe : "remote-video.mp4";
+}
+
+async function getDownloadResponse(rawUrl, signal) {
+  let current = await validateRemoteUrl(rawUrl);
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
+    const response = await fetch(current, {
+      redirect: "manual",
+      signal,
+      headers: { Accept: "video/*,application/octet-stream;q=0.9" }
+    });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get("location");
+      if (!location) throw new Error("The video URL redirected without a destination");
+      if (redirectCount === MAX_REDIRECTS) throw new Error("The video URL redirected too many times");
+      current = await validateRemoteUrl(new URL(location, current).toString());
+      continue;
+    }
+    if (!response.ok || !response.body) throw new Error(`The video URL returned HTTP ${response.status}`);
+    const contentType = (response.headers.get("content-type") || "").toLowerCase();
+    if (contentType && !contentType.startsWith("video/") && !contentType.includes("octet-stream") && !contentType.includes("binary")) {
+      throw new Error("The URL did not return a direct video file");
+    }
+    return { response, finalUrl: current };
+  }
+  throw new Error("Unable to retrieve the video URL");
 }
 
 function runFfmpeg(command) {
@@ -113,12 +211,13 @@ export function isSupportedVideo(filename) {
 }
 
 export class MediaTranscoder {
-  constructor({ mediaRoot, publicBasePath = "/media/hls", quotaBytes = 10 * 1024 * 1024 * 1024 }) {
+  constructor({ mediaRoot, publicBasePath = "/media/hls", quotaBytes = 15 * 1024 * 1024 * 1024, maxSourceBytes = 4 * 1024 * 1024 * 1024 }) {
     this.mediaRoot = mediaRoot;
     this.uploadRoot = path.join(mediaRoot, "uploads");
     this.hlsRoot = path.join(mediaRoot, "hls");
     this.publicBasePath = publicBasePath.replace(/\/$/, "");
     this.quotaBytes = quotaBytes;
+    this.maxSourceBytes = maxSourceBytes;
     this.manifestPath = path.join(mediaRoot, "library.json");
     this.jobs = new Map();
     this.completedMedia = new Map();
@@ -194,6 +293,10 @@ export class MediaTranscoder {
     };
   }
 
+  getSourceLimit(stats) {
+    return Math.max(0, Math.min(this.maxSourceBytes, stats.availableBytes - QUOTA_GUARD_BYTES));
+  }
+
   async saveManifest() {
     const temporaryPath = `${this.manifestPath}.tmp`;
     await fsp.writeFile(temporaryPath, JSON.stringify(this.getCompletedMedia(), null, 2), "utf8");
@@ -211,32 +314,86 @@ export class MediaTranscoder {
     return true;
   }
 
-  start(file) {
+  createJob({ originalName, inputPath, sourceUrl = null }) {
     const jobId = crypto.randomUUID();
     const outputDirectory = path.join(this.hlsRoot, jobId);
-    const job = {
+    return {
       id: jobId,
       status: "queued",
       progress: 0,
-      originalName: file.originalname,
+      originalName,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       error: null,
       outputDirectory,
-      inputPath: file.path,
+      inputPath,
+      sourceUrl,
       media: null
     };
+  }
 
-    this.jobs.set(jobId, job);
+  failJob(job, error) {
+    job.status = "failed";
+    job.error = error.message || "Transcoding failed";
+    job.updatedAt = new Date().toISOString();
+    void this.cleanupJob(job);
+    console.error(`HLS transcode ${job.id} failed:`, error);
+  }
+
+  start(file) {
+    const job = this.createJob({ originalName: file.originalname, inputPath: file.path });
+    this.jobs.set(job.id, job);
     void this.process(job).catch((error) => {
-      job.status = "failed";
-      job.error = error.message || "Transcoding failed";
-      job.updatedAt = new Date().toISOString();
-      void this.cleanupJob(job);
-      console.error(`HLS transcode ${job.id} failed:`, error);
+      this.failJob(job, error);
     });
 
     return this.serializeJob(job);
+  }
+
+  startRemoteImport(sourceUrl, maxBytes) {
+    const job = this.createJob({
+      originalName: "remote-video.mp4",
+      inputPath: path.join(this.uploadRoot, `${crypto.randomUUID()}.download`),
+      sourceUrl
+    });
+    this.jobs.set(job.id, job);
+    void this.downloadAndProcess(job, maxBytes).catch((error) => {
+      this.failJob(job, error);
+    });
+    return this.serializeJob(job);
+  }
+
+  async downloadAndProcess(job, maxBytes) {
+    this.updateJob(job, { status: "downloading video", progress: 1 });
+    const abortController = new AbortController();
+    const { response, finalUrl } = await getDownloadResponse(job.sourceUrl, abortController.signal);
+    const contentLength = asNumber(response.headers.get("content-length"));
+    if (contentLength && contentLength > maxBytes) {
+      throw new Error(`The direct video file is larger than the currently available ${Math.floor(maxBytes / 1024 / 1024)} MB import limit`);
+    }
+    job.originalName = filenameFromRemoteUrl(finalUrl, response.headers.get("content-disposition"));
+    let downloadedBytes = 0;
+    const limiter = new Transform({
+      transform: (chunk, _encoding, callback) => {
+        downloadedBytes += chunk.length;
+        if (downloadedBytes > maxBytes) {
+          abortController.abort();
+          callback(new Error(`The direct video exceeded the ${Math.floor(maxBytes / 1024 / 1024)} MB import limit`));
+          return;
+        }
+        const downloadProgress = contentLength ? Math.round((downloadedBytes / contentLength) * 18) : Math.min(18, Math.round(downloadedBytes / maxBytes * 18));
+        this.updateJob(job, { progress: clamp(downloadProgress, 1, 18) });
+        callback(null, chunk);
+      }
+    });
+    try {
+      await pipeline(Readable.fromWeb(response.body), limiter, fs.createWriteStream(job.inputPath, { flags: "wx" }));
+    } catch (error) {
+      await fsp.unlink(job.inputPath).catch(() => {});
+      throw error;
+    }
+    if (!downloadedBytes) throw new Error("The direct video download was empty");
+    await this.process(job);
   }
 
   serializeJob(job) {
@@ -284,21 +441,21 @@ export class MediaTranscoder {
       await runFfmpeg(command);
     } catch (error) {
       if (exceeded) {
-        throw new Error("The 10 GB library storage limit was reached during transcoding");
+        throw new Error(`The ${Math.round(this.quotaBytes / 1024 / 1024 / 1024)} GB library storage limit was reached during transcoding`);
       }
       throw error;
     } finally {
       clearInterval(guard);
     }
-    if (exceeded) throw new Error("The 10 GB library storage limit was reached during transcoding");
+    if (exceeded) throw new Error(`The ${Math.round(this.quotaBytes / 1024 / 1024 / 1024)} GB library storage limit was reached during transcoding`);
   }
 
   async process(job) {
     const beforeProcess = await this.getStorageStats();
     if (beforeProcess.usedBytes > this.quotaBytes - QUOTA_GUARD_BYTES) {
-      throw new Error("The 10 GB library storage limit has been reached. Delete the current movie before uploading another.");
+      throw new Error(`The ${Math.round(this.quotaBytes / 1024 / 1024 / 1024)} GB library storage limit has been reached. Delete a library title before importing another.`);
     }
-    this.updateJob(job, { status: "probing", progress: 4 });
+    this.updateJob(job, { status: "probing", progress: Math.max(job.progress, 4) });
     const metadata = await probe(job.inputPath);
     const videoStream = metadata.streams?.find((stream) => stream.codec_type === "video");
     if (!videoStream) throw new Error("The uploaded file does not contain a video stream");
@@ -314,23 +471,24 @@ export class MediaTranscoder {
     const description = metadataText(tags.description || tags.comment || tags.synopsis);
     const creator = metadataText(tags.artist || tags.author || tags.director);
 
+    const qualities = getHlsQualityLadder(width, height);
     await ensureDirectory(job.outputDirectory);
-    await Promise.all(QUALITY_LADDER.map((_, index) => ensureDirectory(path.join(job.outputDirectory, `v${index}`))));
+    await Promise.all(qualities.map((_, index) => ensureDirectory(path.join(job.outputDirectory, `v${index}`))));
     await ensureDirectory(path.join(job.outputDirectory, "subtitles"));
 
-    this.updateJob(job, { status: "creating preview", progress: 10 });
+    this.updateJob(job, { status: "creating preview", progress: Math.max(job.progress, 10) });
     await this.createPreview(job.inputPath, path.join(job.outputDirectory, "preview.mp4"));
 
-    this.updateJob(job, { status: "creating poster thumbnail", progress: 15 });
+    this.updateJob(job, { status: "creating poster thumbnail", progress: Math.max(job.progress, 15) });
     const posterCreated = await this.createPoster(job.inputPath, path.join(job.outputDirectory, "poster.jpg"), duration);
 
-    this.updateJob(job, { status: "creating HLS variants", progress: 20 });
-    await this.createHls(job, { hasAudio });
+    this.updateJob(job, { status: "creating HLS variants", progress: Math.max(job.progress, 20) });
+    await this.createHls(job, { hasAudio, qualities });
 
-    this.updateJob(job, { status: "creating seek previews", progress: 82 });
+    this.updateJob(job, { status: "creating seek previews", progress: Math.max(job.progress, 82) });
     const thumbnailVtt = await this.createThumbnailSprite(job, { duration, width, height });
 
-    this.updateJob(job, { status: "extracting subtitles and chapters", progress: 90 });
+    this.updateJob(job, { status: "extracting subtitles and chapters", progress: Math.max(job.progress, 90) });
     const subtitleTracks = await this.extractSubtitles(job, subtitleStreams);
     const chaptersVtt = await this.writeChapters(job, metadata.chapters || []);
 
@@ -352,6 +510,7 @@ export class MediaTranscoder {
       year: metadataYear(tags),
       maturityRating: "Personal",
       resolution: width && height ? `${width}×${height} · ${height}p source` : "Adaptive HLS",
+      availableResolutions: qualities.map((quality) => quality.id),
       audio: hasAudio ? `${String(audioStream?.codec_name || "AAC").toUpperCase()} adaptive audio` : "No audio track",
       matchScore: 100,
       genres: ["Personal Library"],
@@ -400,16 +559,19 @@ export class MediaTranscoder {
     }
   }
 
-  async createHls(job, { hasAudio }) {
+  async createHls(job, { hasAudio, qualities }) {
     const filterGraph = [
-      "[0:v:0]split=3[v0][v1][v2]",
-      ...QUALITY_LADDER.map((quality, index) =>
-        `[v${index}]scale=w=${quality.width}:h=${quality.height}:force_original_aspect_ratio=decrease,pad=${quality.width}:${quality.height}:(ow-iw)/2:(oh-ih)/2[v${index}out]`
+      `[0:v:0]split=${qualities.length}${qualities.map((_, index) => `[v${index}]`).join("")}`,
+      ...qualities.map((quality, index) =>
+        // Cap the scale expressions at the source dimensions. A smaller
+        // upload can receive a compatible padded rendition, but it is never
+        // enlarged and presented as higher-quality video.
+        `[v${index}]scale=w='min(${quality.width},iw)':h='min(${quality.height},ih)':force_original_aspect_ratio=decrease,pad=${quality.width}:${quality.height}:(ow-iw)/2:(oh-ih)/2[v${index}out]`
       )
     ].join(";");
     const maps = [];
     const videoRates = [];
-    QUALITY_LADDER.forEach((quality, index) => {
+    qualities.forEach((quality, index) => {
       maps.push("-map", `[v${index}out]`);
       if (hasAudio) maps.push("-map", "0:a:0?");
       videoRates.push(
@@ -418,7 +580,7 @@ export class MediaTranscoder {
         `-bufsize:v:${index}`, `${quality.buffer}k`
       );
     });
-    const variantStreams = QUALITY_LADDER.map((_, index) => hasAudio ? `v:${index},a:${index}` : `v:${index}`).join(" ");
+    const variantStreams = qualities.map((_, index) => hasAudio ? `v:${index},a:${index}` : `v:${index}`).join(" ");
     const playlistTemplate = path.join(job.outputDirectory, "variant_%v.m3u8");
 
     const command = ffmpeg(job.inputPath)
@@ -427,7 +589,7 @@ export class MediaTranscoder {
         ...maps,
         "-c:v libx264",
         "-preset veryfast",
-        "-profile:v main",
+        "-profile:v high",
         "-pix_fmt yuv420p",
         "-g 48",
         "-keyint_min 48",
@@ -441,7 +603,7 @@ export class MediaTranscoder {
         "-hls_segment_type mpegts",
         "-master_pl_name master.m3u8",
         "-var_stream_map", variantStreams,
-        "-hls_segment_filename", path.join(job.outputDirectory, "v%v", "segment_%05d.ts")
+        "-hls_segment_filename", path.join(job.outputDirectory, "segment_%v_%05d.ts")
       ])
       .on("progress", (progress) => {
         const estimated = Number.isFinite(progress.percent) ? progress.percent : 0;

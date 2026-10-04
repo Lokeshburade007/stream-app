@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Play, Users, Sparkles, ExternalLink, Film, Tv, Clock, CheckCircle } from "lucide-react";
-import { apiUrl } from "../lib/api";
+import { apiUrl, mediaUrl } from "../lib/api";
 
 export default function InfoModal({ movie, isOpen, onClose, onPlay, onStartWatchParty }) {
   const [episodesData, setEpisodesData] = useState(null);
@@ -72,7 +72,7 @@ export default function InfoModal({ movie, isOpen, onClose, onPlay, onStartWatch
             position: "relative",
             width: "100%",
             height: "280px",
-            backgroundImage: `url(${movie.backdrop || movie.poster})`,
+            backgroundImage: `url(${mediaUrl(movie.backdrop || movie.poster)})`,
             backgroundSize: "cover",
             backgroundPosition: "center"
           }}

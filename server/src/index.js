@@ -33,19 +33,14 @@ const __dirname = path.dirname(__filename);
 const PORT = parseInt(process.env.PORT || "5001", 10);
 const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017/stream_hub";
 const MEDIA_ROOT = path.resolve(__dirname, "../media");
-const LIBRARY_QUOTA_BYTES = Math.max(1, Number(process.env.VIDEO_STORAGE_QUOTA_GB || 10)) * 1024 * 1024 * 1024;
-const MAX_UPLOAD_BYTES = Math.min(2 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * 0.25));
-const HOST_CONFIG = (process.env.HOST_EMAIL || "buradepiyush@gmail.com,lokesh@streamhub.io,lokesh-demo@streamhub.io").trim();
-const HOST_EMAILS = Array.from(new Set([
-  ...HOST_CONFIG.split(",").map((e) => e.trim().toLowerCase()).filter(Boolean),
-  "buradepiyush@gmail.com",
-  "lokesh-demo@streamhub.io",
-  "lokesh@streamhub.io"
-]));
+const configuredQuotaGb = Number(process.env.VIDEO_STORAGE_QUOTA_GB || 15);
+const LIBRARY_QUOTA_BYTES = (Number.isFinite(configuredQuotaGb) && configuredQuotaGb > 0 ? configuredQuotaGb : 15) * 1024 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = Math.min(4 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * 0.25));
+const HOST_EMAIL = (process.env.HOST_EMAIL || "buradepiyush@gmail.com").trim().toLowerCase();
 
 function isHostEmail(email) {
   if (!email) return false;
-  return HOST_EMAILS.includes(String(email).trim().toLowerCase());
+  return String(email).trim().toLowerCase() === HOST_EMAIL;
 }
 
 // Read JWT RSA Keys
@@ -66,7 +61,11 @@ function getJwtKeys() {
 
 async function startServer() {
   const { privateKey, publicKey } = getJwtKeys();
-  const transcoder = new MediaTranscoder({ mediaRoot: MEDIA_ROOT, quotaBytes: LIBRARY_QUOTA_BYTES });
+  const transcoder = new MediaTranscoder({
+    mediaRoot: MEDIA_ROOT,
+    quotaBytes: LIBRARY_QUOTA_BYTES,
+    maxSourceBytes: MAX_UPLOAD_BYTES
+  });
   await transcoder.initialize();
 
   // Connect Mongoose for custom stream models (WatchProgress)
@@ -145,20 +144,45 @@ async function startServer() {
       return res.status(401).json({ error: "Your sign-in session is missing or expired. Sign in again as Lokesh (Host)." });
     }
     if (!isHostEmail(claims.email)) {
-      return res.status(403).json({ error: `This account is not the configured library host. Sign in as ${HOST_CONFIG}.` });
+      return res.status(403).json({ error: `This account is not the configured library host. Sign in as ${HOST_EMAIL}.` });
     }
     req.hostUser = { userId: claims.sub, email: claims.email };
     next();
   };
 
   const upload = multer({
-    storage: multer.diskStorage({
-      destination: (_req, _file, callback) => callback(null, transcoder.getUploadDirectory()),
-      filename: (_req, file, callback) => {
+    storage: {
+      _handleFile: (req, file, callback) => {
         const extension = path.extname(file.originalname || "").toLowerCase();
-        callback(null, `${crypto.randomUUID()}${extension}`);
-      }
-    }),
+        const destination = transcoder.getUploadDirectory();
+        const filename = `${crypto.randomUUID()}${extension}`;
+        const targetPath = path.join(destination, filename);
+        const output = fs.createWriteStream(targetPath, { flags: "wx" });
+        let bytes = 0;
+        let settled = false;
+        const finish = (error, info) => {
+          if (settled) return;
+          settled = true;
+          if (error) {
+            output.destroy();
+            fs.unlink(targetPath, () => callback(error));
+            return;
+          }
+          callback(null, info);
+        };
+        file.stream.on("data", (chunk) => {
+          bytes += chunk.length;
+          if (bytes > req.maxSourceBytes) {
+            file.stream.destroy(new multer.MulterError("LIMIT_FILE_SIZE", file.fieldname));
+          }
+        });
+        file.stream.once("error", (error) => finish(error));
+        output.once("error", (error) => finish(error));
+        output.once("finish", () => finish(null, { destination, filename, path: targetPath, size: bytes }));
+        file.stream.pipe(output);
+      },
+      _removeFile: (_req, file, callback) => fs.unlink(file.path, callback)
+    },
     limits: { fileSize: MAX_UPLOAD_BYTES },
     fileFilter: (_req, file, callback) => {
       if (!isSupportedVideo(file.originalname)) {
@@ -168,6 +192,23 @@ async function startServer() {
       callback(null, true);
     }
   });
+
+  const reserveLibraryImportSpace = async (req, res, next) => {
+    const storage = await transcoder.getStorageStats();
+    if (storage.activeJob) {
+      return res.status(409).json({ error: "Wait for the current download or encoding job to finish before importing another video." });
+    }
+    const maxSourceBytes = transcoder.getSourceLimit(storage);
+    if (maxSourceBytes < 1024 * 1024) {
+      return res.status(409).json({ error: "The library does not have enough free storage for another video. Delete a title first." });
+    }
+    const requestBytes = Number(req.headers["content-length"] || 0);
+    if (requestBytes && requestBytes > maxSourceBytes + 1024 * 1024) {
+      return res.status(413).json({ error: `Import exceeds the currently available ${Math.floor(maxSourceBytes / 1024 / 1024)} MB source limit.` });
+    }
+    req.maxSourceBytes = maxSourceBytes;
+    next();
+  };
 
   const resolveMedia = async (mediaId) => transcoder.getMediaById(mediaId) || findLiveMedia(mediaId);
 
@@ -212,7 +253,29 @@ async function startServer() {
 
   // HLS playlists change as an encode is published while immutable segments can
   // be cached aggressively. CORS is required for hls.js on a separate frontend.
-  app.use("/media/hls", express.static(transcoder.hlsRoot, {
+  app.use("/media/hls", (req, res, next) => {
+    const match = req.path.match(/^\/([^\/]+)\/(?:v(\d+)\/)?(segment_\d+\.ts)$/);
+    if (match) {
+      const [, jobId, variantNum, segmentName] = match;
+      const directPath = path.join(transcoder.hlsRoot, jobId, segmentName);
+      if (!fs.existsSync(directPath)) {
+        const candidatePaths = [
+          path.join(transcoder.hlsRoot, jobId, variantNum ? `v${variantNum}` : "v0", segmentName),
+          path.join(transcoder.hlsRoot, jobId, `segment_${variantNum || 0}_${segmentName.replace(/^segment_/, "")}`)
+        ];
+        for (const candidate of candidatePaths) {
+          if (fs.existsSync(candidate)) {
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+            res.setHeader("Content-Type", "video/mp2t");
+            res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+            return res.sendFile(candidate);
+          }
+        }
+      }
+    }
+    next();
+  }, express.static(transcoder.hlsRoot, {
     setHeaders: (res, filePath) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
@@ -231,9 +294,8 @@ async function startServer() {
     }
   }));
 
-  // The personal library is intentionally host-only and holds one movie at a
-  // time. The original is deleted after HLS packaging, while the full HLS
-  // package remains inside a strict 10 GB server-side quota.
+  // The host library can contain multiple titles. Each temporary source and
+  // all generated HLS assets share one strict server-side storage quota.
   app.get("/api/library/access", async (req, res) => {
     const claims = await getAccessClaims(req);
     if (!claims) return res.status(401).json({ canManage: false });
@@ -243,23 +305,15 @@ async function startServer() {
   });
 
   app.get("/api/library", requireHost, async (_req, res) => {
+    const storage = await transcoder.getStorageStats();
     res.json({
-      storage: await transcoder.getStorageStats(),
-      maxUploadBytes: MAX_UPLOAD_BYTES,
+      storage,
+      maxUploadBytes: transcoder.getSourceLimit(storage),
       media: transcoder.getCompletedMedia()
     });
   });
 
-  app.post("/api/media/upload", requireHost, async (req, res) => {
-    const storage = await transcoder.getStorageStats();
-    const requestBytes = Number(req.headers["content-length"] || 0);
-    if (storage.mediaCount || storage.activeJob || storage.usedBytes > 0) {
-      return res.status(409).json({ error: "Delete the current library movie before uploading another one." });
-    }
-    if (requestBytes && requestBytes > MAX_UPLOAD_BYTES) {
-      return res.status(413).json({ error: `Upload exceeds the ${Math.floor(MAX_UPLOAD_BYTES / 1024 / 1024 / 1024)} GB input limit.` });
-    }
-
+  app.post("/api/media/upload", requireHost, reserveLibraryImportSpace, async (req, res) => {
     upload.single("video")(req, res, (error) => {
       if (error) return res.status(400).json({ error: error.message });
       if (!req.file) return res.status(400).json({ error: "Attach a video file in the 'video' field" });
@@ -270,6 +324,17 @@ async function startServer() {
         job,
         statusUrl: `/api/media/uploads/${job.id}`
       });
+    });
+  });
+
+  app.post("/api/media/import-url", requireHost, reserveLibraryImportSpace, (req, res) => {
+    const sourceUrl = typeof req.body?.url === "string" ? req.body.url.trim() : "";
+    if (!sourceUrl) return res.status(400).json({ error: "Provide a direct HTTPS video file URL." });
+    const job = transcoder.startRemoteImport(sourceUrl, req.maxSourceBytes);
+    res.status(202).json({
+      message: "Server-side video download started. It will be validated, encoded, and added to the library when complete.",
+      job,
+      statusUrl: `/api/media/uploads/${job.id}`
     });
   });
 
@@ -542,15 +607,16 @@ async function startServer() {
   // 7. Instant Demo / Quick Access Login (generates valid RS256 token signed by SecurePool key)
   app.post("/auth/quick-access", async (req, res) => {
     try {
-      const { name = "Lokesh", email = "buradepiyush@gmail.com", tenantId = "default" } = req.body;
-      const isHost = isHostEmail(email);
+      const { name = "Lokesh", email = "lokesh-demo@streamhub.io", tenantId = "default" } = req.body;
+      if (isHostEmail(email)) {
+        return res.status(403).json({ error: "The host account must use verified SecurePool sign-in; demo access cannot manage the video library." });
+      }
       const userId = `usr_${Buffer.from(email).toString("hex").substring(0, 12)}`;
 
       const accessToken = await tokenService.generateAccessToken(userId, tenantId, {
         email,
         name,
-        role: isHost ? "host" : "premium_member",
-        isHost,
+        role: "premium_member",
         streamingDevices: ["Smart TV", "Laptop", "Mobile"]
       });
 
@@ -562,8 +628,7 @@ async function startServer() {
           id: userId,
           name,
           email,
-          role: isHost ? "host" : "premium_member",
-          isHost,
+          role: "premium_member",
           avatarColor: "#E50914"
         },
         accessToken,
@@ -581,7 +646,7 @@ async function startServer() {
     console.log(`📡 HTTP API & Streaming: http://localhost:${PORT}`);
     console.log(`📖 Swagger Docs:         http://localhost:${PORT}/docs`);
     console.log(`⚡ WebSocket Engine:      Active on port ${PORT}`);
-    console.log(`🎞️  Video Library:        ${Math.round(LIBRARY_QUOTA_BYTES / 1024 / 1024 / 1024)} GB · Host ${HOST_CONFIG}`);
+    console.log(`🎞️  Video Library:        ${Math.round(LIBRARY_QUOTA_BYTES / 1024 / 1024 / 1024)} GB · Host ${HOST_EMAIL}`);
     console.log(`======================================================\n`);
   });
 }

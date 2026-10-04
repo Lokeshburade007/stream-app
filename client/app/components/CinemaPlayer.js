@@ -770,7 +770,7 @@ export default function CinemaPlayer({
             className="cinema-video"
             playsInline
             preload="metadata"
-            poster={movie?.backdrop || movie?.poster || undefined}
+            poster={resolveMediaUrl(movie?.backdrop || movie?.poster) || undefined}
             crossOrigin={isHlsStream ? "anonymous" : undefined}
             onLoadStart={() => setIsLoading(true)}
             onWaiting={() => setIsLoading(true)}
