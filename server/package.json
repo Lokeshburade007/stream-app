@@ -1,0 +1,20 @@
+{
+  "name": "stream-app-server",
+  "version": "1.0.0",
+  "description": "High-performance media streaming and real-time watch party server with securepool authentication",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.5.0",
+    "securepool": "^1.1.3",
+    "socket.io": "^4.8.1"
+  }
+}
