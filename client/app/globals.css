@@ -630,6 +630,19 @@ body {
   flex-direction: column;
 }
 
+/* This wrapper gives the video stage a definite height. Without it, a
+   portrait video's percentage height can resolve against its intrinsic size
+   on mobile browsers, leaving a very small video in the middle of the page. */
+.player-viewport {
+  background: #000;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
 .player-header {
   position: absolute;
   top: 0;
@@ -688,6 +701,8 @@ body {
 
 .player-main {
   flex: 1;
+  min-height: 0;
+  min-width: 0;
   position: relative;
   display: flex;
   align-items: center;
@@ -698,8 +713,27 @@ body {
 .cinema-video {
   width: 100%;
   height: 100%;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
   background: #000;
+}
+
+/* Respect the media's native aspect ratio. Portrait clips use the full usable
+   player height; landscape clips continue to use the full available width. */
+.player-overlay.video-portrait .cinema-video {
+  width: auto;
+}
+
+.player-overlay:fullscreen,
+.player-overlay:-webkit-full-screen {
+  height: 100dvh;
+  width: 100vw;
+}
+
+.player-overlay:fullscreen .player-viewport,
+.player-overlay:-webkit-full-screen .player-viewport {
+  height: 100%;
 }
 
 .player-loading-overlay,
@@ -1353,6 +1387,23 @@ body {
     min-height: 100dvh;
     overflow: hidden;
   }
+  .player-viewport {
+    height: 100dvh;
+  }
+  /* Reserve space for the touch header and control bar. A vertical video can
+     then use nearly the entire phone height instead of being constrained to a
+     short, landscape-shaped stage. */
+  .player-overlay.video-portrait .player-main {
+    box-sizing: border-box;
+    height: 100%;
+    padding: 72px 0 max(104px, env(safe-area-inset-bottom));
+  }
+  .player-overlay.video-portrait .cinema-video {
+    height: 100%;
+    max-height: 100%;
+    max-width: 100%;
+    width: auto;
+  }
   .player-header {
     height: auto;
     min-height: 62px;
@@ -1443,6 +1494,59 @@ body {
 @keyframes mobile-party-slide-in {
   from { transform: translateX(100%); }
   to { transform: translateX(0); }
+}
+
+/* Phones in landscape often have a wide CSS viewport. Keep Party Chat as an
+   on-demand sheet there too, rather than turning it into a permanent sidebar
+   that steals most of the movie area. Fine-pointer desktops keep the desktop
+   lounge layout. */
+@media (max-height: 800px) and (orientation: landscape) and (pointer: coarse),
+       (max-height: 800px) and (orientation: landscape) and (hover: none) {
+  .player-overlay {
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+  .player-viewport {
+    height: 100dvh;
+  }
+  .party-sidebar {
+    animation: mobile-party-slide-in 180ms ease-out;
+    border-left: 0;
+    height: 100dvh;
+    inset: 0;
+    overflow: hidden;
+    padding-bottom: env(safe-area-inset-bottom);
+    position: fixed;
+    top: 0;
+    width: 100%;
+    z-index: 1100;
+  }
+  .sidebar-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+    padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+  }
+  .sidebar-header > div:last-child { width: 100%; }
+  .mobile-party-back {
+    align-items: center;
+    align-self: flex-start;
+    background: rgba(255, 255, 255, 0.09);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 999px;
+    color: #fff;
+    cursor: pointer;
+    display: inline-flex;
+    font-size: 13px;
+    font-weight: 700;
+    gap: 6px;
+    padding: 7px 11px;
+  }
+  .voice-chat-panel { padding: 8px 16px; }
+  .participants-bar { padding: 8px 16px; }
+  .chat-message-list { min-height: 0; padding: 10px 16px; }
+  .chat-input-row { padding: 8px 16px max(8px, env(safe-area-inset-bottom)); }
 }
 
 @media (max-width: 540px) {

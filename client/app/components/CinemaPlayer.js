@@ -112,11 +112,17 @@ export default function CinemaPlayer({
   const [voiceMembers, setVoiceMembers] = useState([]);
   const [voiceError, setVoiceError] = useState("");
   const [playbackSessionReady, setPlaybackSessionReady] = useState(false);
+  // The browser only exposes a video's rendered dimensions after metadata is
+  // available. Keep this separately from the catalogue metadata so uploaded
+  // portrait clips get a tall viewport even when their listing has no size.
+  const [videoOrientation, setVideoOrientation] = useState("unknown");
 
   const hideControlsTimer = useRef(null);
 
   useEffect(() => {
-    const desktopQuery = window.matchMedia("(min-width: 769px)");
+    // A rotated phone can be much wider than 768px. Treat a viewport as a
+    // desktop lounge only when it also has a desktop-style fine pointer.
+    const desktopQuery = window.matchMedia("(min-width: 769px) and (hover: hover) and (pointer: fine)");
     const updateSidebarForViewport = () => setSidebarOpen(Boolean(watchPartyRoom) && desktopQuery.matches);
     const initialViewportUpdate = window.setTimeout(updateSidebarForViewport, 0);
     if (watchPartyRoom) desktopQuery.addEventListener("change", updateSidebarForViewport);
@@ -272,6 +278,7 @@ export default function CinemaPlayer({
       setIsLoading(true);
       setCurrentTime(0);
       setDuration(0);
+      setVideoOrientation("unknown");
     }, 0);
     return () => window.clearTimeout(resetTimer);
   }, [movie?.id]);
@@ -668,6 +675,9 @@ export default function CinemaPlayer({
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
     if (!document.fullscreenElement) {
+      // Fullscreen should be a distraction-free viewing mode. The Chat button
+      // remains in the header, so it can be opened again whenever needed.
+      setSidebarOpen(false);
       containerRef.current.requestFullscreen().catch(() => {});
       setIsFullscreen(true);
     } else {
@@ -752,12 +762,12 @@ export default function CinemaPlayer({
   return (
     <div
       ref={containerRef}
-      className="player-overlay"
+      className={`player-overlay video-${videoOrientation}`}
       onMouseMove={handleMouseMove}
       style={{ display: "flex", flexDirection: "row" }}
     >
       {/* Main Video Viewport */}
-      <div style={{ flex: 1, position: "relative", display: "flex", flexDirection: "column", background: "#000" }}>
+      <div className="player-viewport">
         {/* Top Header Bar */}
         <div className={`player-header ${!showControls ? "hidden-controls" : ""}`}>
           <div className="player-header-left">
@@ -825,7 +835,7 @@ export default function CinemaPlayer({
         </div>
 
         {/* Video Element */}
-        <div className="player-main" onClick={togglePlay}>
+        <div className={`player-main video-${videoOrientation}`} onClick={togglePlay}>
           <video
             ref={videoRef}
             className="cinema-video"
@@ -850,6 +860,12 @@ export default function CinemaPlayer({
             onLoadedMetadata={() => {
               if (videoRef.current) {
                 setDuration(videoRef.current.duration);
+                const { videoWidth, videoHeight } = videoRef.current;
+                if (videoWidth && videoHeight) {
+                  setVideoOrientation(
+                    videoHeight > videoWidth ? "portrait" : videoWidth > videoHeight ? "landscape" : "square"
+                  );
+                }
               }
             }}
             onEnded={() => setIsPlaying(false)}
