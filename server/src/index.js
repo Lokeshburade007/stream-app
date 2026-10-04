@@ -35,7 +35,11 @@ const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017/stream_hub
 const MEDIA_ROOT = path.resolve(__dirname, "../media");
 const configuredQuotaGb = Number(process.env.VIDEO_STORAGE_QUOTA_GB || 15);
 const LIBRARY_QUOTA_BYTES = (Number.isFinite(configuredQuotaGb) && configuredQuotaGb > 0 ? configuredQuotaGb : 15) * 1024 * 1024 * 1024;
-const MAX_UPLOAD_BYTES = Math.min(4 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * 0.25));
+// Keep one third of the configured library available while the original source
+// and its generated HLS package coexist. With the standard 15 GB quota, a
+// source can be up to 10 GB and 5 GB remains for the encode.
+const MAX_UPLOAD_BYTES = Math.min(10 * 1024 * 1024 * 1024, Math.floor(LIBRARY_QUOTA_BYTES * (2 / 3)));
+const TRANSCODE_HEADROOM_BYTES = Math.max(1024 * 1024 * 1024, LIBRARY_QUOTA_BYTES - MAX_UPLOAD_BYTES);
 const HOST_EMAIL = (process.env.HOST_EMAIL || "buradepiyush@gmail.com").trim().toLowerCase();
 
 function isHostEmail(email) {
@@ -64,7 +68,8 @@ async function startServer() {
   const transcoder = new MediaTranscoder({
     mediaRoot: MEDIA_ROOT,
     quotaBytes: LIBRARY_QUOTA_BYTES,
-    maxSourceBytes: MAX_UPLOAD_BYTES
+    maxSourceBytes: MAX_UPLOAD_BYTES,
+    transcodeHeadroomBytes: TRANSCODE_HEADROOM_BYTES
   });
   await transcoder.initialize();
 

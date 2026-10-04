@@ -91,18 +91,17 @@ Only one import/encoding job runs at a time, but the library can retain multiple
 completed movies. This keeps the storage budget predictable while allowing the
 available 15 GB to be shared across titles.
 
-The input-file limit is calculated as the smaller of 4 GB and 25% of the total
-quota. With a 15 GB library, a source file may be up to 3.75 GB when enough
-storage is free. This reserved
-space is necessary because source and generated HLS output coexist during
-transcoding. Allowing a 15 GB source into a 15 GB total library would leave no
-safe space for playable HLS output.
+The input-file limit is calculated as the smaller of 10 GB and two-thirds of
+the total quota. With an empty 15 GB library, a source file may be up to 10 GB.
+The worker reserves the remaining 5 GB while the original and generated HLS
+output coexist. As completed titles consume storage, the upload limit lowers
+automatically to preserve that encoding workspace.
 
 A 4K package uses materially more storage and CPU time than a 1080p package.
 The same 15 GB quota guard covers every HLS rendition, thumbnail, preview, and
-temporary source. If free storage is insufficient, the job stops cleanly before
-the quota is exceeded; delete an older title or upload a smaller authorized
-source before retrying.
+temporary source. If a package needs more than the reserved workspace, the job
+stops cleanly before the quota is exceeded; delete an older title or upload a
+smaller authorized source before retrying.
 
 If an encode fails or the quota guard triggers, the partial HLS directory and
 temporary source are removed. The error shown in the manager explains whether
@@ -148,6 +147,6 @@ and redirect chains are rejected.
 | `Only Lokesh (Host)...` or `This account is not the configured library host` | A stale backend was running or the token belongs to another account. Restart the backend, sign out/in, and verify `HOST_EMAIL` in `server/.env`. |
 | Upload controls are missing | The browser asked `/api/library/access` and the current token is not the configured host. Use normal verified sign-in; demo profiles cannot manage media. |
 | `EADDRINUSE` on port 5001 | Another backend already owns the port. Stop the old process, then start one backend with `npm run dev`. |
-| Upload is rejected as too large | Reduce the source to the limit shown in the manager. The quota is shared total storage, not a 15 GB per-source limit. |
+| Upload is rejected as too large | Reduce the source to the live limit shown in the manager. It reaches 10 GB only when at least 15 GB is free for the source and HLS workspace. |
 | Video is not visible after restart | Confirm `server/media/hls/<job-id>/master.m3u8` and `server/media/library.json` still exist and the backend can read `server/media/`. |
 | Cross-device voice is unavailable | Browsers require HTTPS for microphone access outside `localhost`; configure HTTPS before using voice chat on phones or remote devices. |
